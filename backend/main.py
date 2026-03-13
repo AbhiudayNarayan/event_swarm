@@ -75,7 +75,7 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 @app.post("/api/email")
 async def email_endpoint(
     file: UploadFile = File(...),
-    email_template: str = Form(...),
+    template: str = Form(...),
 ):
     file_path: Optional[Path] = None
     try:
@@ -83,14 +83,13 @@ async def email_endpoint(
         contents = await file.read()
         file_path.write_bytes(contents)
 
-        from tools.csv_parser import parse_participants
-        from agents.email_agent import run_email_agent as _run_email_agent
-
-        participants_data = parse_participants(str(file_path))
-        result = _run_email_agent(participants_data, email_template)
+        from agents.email_agent import run
+        
+        result = run(csv_path=str(file_path), email_template=template)
         return result
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=500, content={"error": str(e)})
     finally:
         if file_path and file_path.exists():
             try:
