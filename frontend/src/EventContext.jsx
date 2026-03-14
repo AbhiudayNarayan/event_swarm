@@ -64,7 +64,9 @@ export function EventProvider({ children }) {
   }, [fetchActiveEvent])
 
   useEffect(() => {
-    const ws = new WebSocket("ws://127.0.0.1:8000/ws/swarm");
+    const apiBase = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+    const wsUrl = apiBase.replace(/^http/, 'ws') + '/ws/swarm';
+    const ws = new WebSocket(wsUrl);
 
     ws.onmessage = (event) => {
         try {

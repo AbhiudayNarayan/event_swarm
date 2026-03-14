@@ -250,7 +250,7 @@ export default function SwarmPage() {
 
         {/* ── Suggestion chips (visible only when chat is empty) ── */}
         {messages.length === 0 && (
-          <div style={{display:'flex', flexWrap:'wrap', gap:'8px', padding:'0 0 12px'}}>
+          <div style={{display:'flex', flexWrap:'wrap', gap:'8px', padding:'0 24px 12px'}}>
             {[
               "Delay opening keynote by 20 mins and notify participants",
               "Generate a sponsor announcement post and email everyone",
@@ -258,7 +258,7 @@ export default function SwarmPage() {
               "Give me a full event status report"
             ].map(chip => (
               <button key={chip} className="btn"
-                style={{borderRadius:'20px', fontSize:'12px', padding:'5px 14px'}}
+                style={{borderRadius:'20px', fontSize:'12px', padding:'5px 14px', background:'var(--bg-card)', border:'1px solid var(--border)'}}
                 onClick={() => sendMessage(chip)}>
                 {chip}
               </button>
@@ -374,24 +374,24 @@ function ContextBar({ eventName, status, onClear, hasMessages }) {
   )
 }
 
-function EmptyState({ onSelect }) {
+function EmptyState() {
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-      <div style={{ fontSize: 48, marginBottom: 8 }}>🤖</div>
-      <h3 style={{ fontWeight: 700, fontSize: 18, color: 'var(--text-primary)' }}>
-        Swarm Orchestrator
-      </h3>
-      <p style={{ fontSize: 13, color: 'var(--text-muted)', textAlign: 'center', maxWidth: 420 }}>
-        I have full context of your event — schedule, participants, sponsors.
-        Type a command and I'll decide which agents to fire.
+    <div style={{
+      textAlign: 'center',
+      padding: '60px 20px 20px',
+      color: 'var(--text-secondary)'
+    }}>
+      <p style={{
+        fontSize: '22px',
+        fontWeight: '500',
+        color: 'var(--text-primary)',
+        marginBottom: '8px'
+      }}>
+        Hello 👋
       </p>
-      <div className="starter-suggestions">
-        {STARTERS.map(s => (
-          <button key={s} className="starter-chip" onClick={() => onSelect(s)}>
-            {s}
-          </button>
-        ))}
-      </div>
+      <p style={{fontSize: '14px'}}>
+        I have full context of your event. What can I do for you?
+      </p>
     </div>
   )
 }

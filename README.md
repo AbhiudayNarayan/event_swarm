@@ -1,55 +1,72 @@
 ## Event Logistics Swarm
 
-Multi-agent FastAPI + React dashboard for orchestrating event logistics: content generation, email prep, schedule conflict resolution, and participant Q&A.
+Multi-agent FastAPI + React dashboard for orchestrating event logistics: content generation, email preparation, schedule conflict resolution, budgeting, logistics and participant Q&A.
 
 ### Tech Stack
 
-- **Backend**: FastAPI, LangGraph, LangChain, OpenAI GPT (`gpt-4o`)
+- **Backend**: FastAPI, LangGraph, LangChain (OpenAI GPT `gpt-4o`), Motor (MongoDB), WebSockets
 - **Frontend**: React, Vite, Tailwind CSS
-- **Agents**: Content, Email, Scheduler, Swarm Orchestrator, Participant Q&A
+- **Agents**: Content, Email, Scheduler, Budget, Logistics, Swarm Orchestrator, Participant Q&A
 
-### Setup Instructions
+### Project Structure
 
-1. **Clone the repository**
-   - `git clone https://github.com/your-org/event-swarm.git`
-   - `cd event-swarm`
+- **`backend/`**: FastAPI API, LangGraph swarm orchestration, agents, tools and database layer
+  - `main.py` – FastAPI app and HTTP/WebSocket endpoints
+  - `orchestrator.py` – LangGraph `swarm_app` wiring content → scheduler → email (+ QA node)
+  - `state.py` – `SwarmState` definition
+  - `db.py` – MongoDB connection using Motor + helpers
+  - `agents/` – individual agents (`content_agent.py`, `scheduler_agent.py`, `email_agent.py`, `budget_agent.py`, `logistics_agent.py`, `qa_agent.py`, `registry.py`)
+  - `tools/` – CSV parsing and schedule conflict utilities
+  - `sample_data/` – demo CSV/JSON for participants, sponsors and schedules
+  - `requirements.txt` – Python dependencies for the backend
+- **`frontend/`**: React dashboard UI (Vite + Tailwind)
+  - `src/App.jsx`, `src/main.jsx`, `src/Layout.jsx`, `src/EventContext.jsx`
+  - `src/pages/` – views for Dashboard, Swarm, Content, Scheduler, Budget, Email, Logistics, Q&A, Events, Setup
+  - `src/components/` – reusable agent panels (Content, Email, Scheduler)
 
-2. **Backend setup (Python)**
-   - Create and activate a virtual environment (example):
-     - `python -m venv .venv`
-     - On Windows: `.\.venv\Scripts\activate`
-   - Install dependencies:
-     - `pip install -r requirements.txt` (or your existing dependency file)
-   - Create a `.env` file in `backend/` with your OpenAI API key and any other secrets, for example:
-     - `OPENAI_API_KEY=your_api_key_here`
-   - Run the FastAPI server from the `backend/` directory:
-     - `uvicorn main:app --reload --host 0.0.0.0 --port 8000`
+### Backend Setup (Python)
 
-3. **Frontend setup (React)**
-   - From the `frontend/` directory:
-     - Install dependencies: `npm install`
-     - Start the dev server: `npm run dev`
-   - Make sure the frontend is configured to talk to the FastAPI backend at `http://localhost:8000`.
+1. **Create & activate a virtualenv**
+   - `cd backend`
+   - `python -m venv .venv`
+   - Windows: `.\.venv\Scripts\activate`
+2. **Install dependencies**
+   - `pip install -r requirements.txt`
+3. **Environment variables (`backend/.env`)**
+   - `OPENAI_API_KEY=your_openai_key`
+   - `MONGODB_URI=mongodb://localhost:27017` (or your Mongo connection string)
+   - `MONGODB_DB=event_swarm`
+4. **Run the API**
+   - From `backend/`:
+   - `uvicorn main:app --reload --host 0.0.0.0 --port 8000`
 
-### Running a Demo
+### Frontend Setup (React)
 
-1. **Sample data**
-   - Participants CSV: `backend/sample_data/sample_participants.csv`
-   - Schedule JSON: `backend/sample_data/sample_schedule.json`
+1. `cd frontend`
+2. Install dependencies: `npm install`
+3. Start dev server: `npm run dev`
+4. Open the printed `http://localhost:5173` (or similar) URL in the browser and ensure API base is `http://localhost:8000`.
 
-2. **Recommended demo flow**
-   - Start with the **Scheduler Agent** tab:
-     - Paste the contents of `sample_schedule.json` and run the scheduler to show conflict detection and resolution.
-   - Move to the **Content Agent** tab:
-     - Use an event name like "Neurathon 26" and a short brief to generate social content for the event.
-   - Use the **Email Agent** tab:
-     - Point the backend at `sample_participants.csv` (or load it via your existing CSV flow) and generate personalized emails.
-   - Run the **Swarm** tab:
-     - Provide event details, CSV path, and events JSON to show the orchestrated multi-agent workflow and activity timeline.
-   - Finish with the **Q&A Bot** tab:
-     - Ask participant-style questions about "Neurathon 26" to showcase the grounded Q&A experience.
+### Using the App (Demo Flow)
 
-### Screenshot
+1. **Create/Select Event (Dashboard / Setup)**
+   - Configure basic event metadata from the dashboard/setup pages.
+2. **Scheduler Agent**
+   - Use `backend/sample_data/sample_schedule.json` (or paste your own events JSON) on the Scheduler page to detect and resolve conflicts.
+3. **Content Agent**
+   - On the Content page, provide event name, target audience and a short brief to generate Twitter/LinkedIn/Instagram posts plus posting schedule.
+4. **Email Agent**
+   - Upload or point to participants CSV (e.g. `backend/sample_data/sample_participants.csv`) and generate personalised invitation/follow-up emails.
+5. **Budget Agent**
+   - Define a total budget and allocations, then add expenses; view per-category and overall spending summaries.
+6. **Logistics Agent**
+   - Track venue, vendors and logistics notes for the event.
+7. **Swarm Orchestrator**
+   - Use the Swarm page to trigger the end‑to‑end multi‑agent workflow and watch the activity log stream in real time via WebSocket.
+8. **Q&A Bot**
+   - Ask participant-style questions (e.g. “What time is the keynote?”) and get answers grounded in the current schedule and generated content.
 
-![Dashboard Screenshot](screenshot.png)
+### Notes
 
+- This repo is designed for local demos and hackathon-style experimentation; you should add proper auth, rate‑limiting and production‑grade configs before deploying.
+- API keys and secrets must **never** be committed to git – keep them only in `.env` or your secret manager.

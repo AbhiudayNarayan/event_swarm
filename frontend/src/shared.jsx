@@ -1,7 +1,7 @@
 import axios from 'axios'
 import React from 'react'
 
-export const API = "http://127.0.0.1:8000"
+export const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
 export const api = axios.create({ baseURL: API })
 
 export function StatusBadge({ status }) {
