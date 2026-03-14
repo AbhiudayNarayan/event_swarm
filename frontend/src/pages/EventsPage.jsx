@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useEventConfig } from '../EventContext'
+import { api } from '../shared'
 import toast from 'react-hot-toast'
 
 export default function EventsPage() {
@@ -29,11 +30,8 @@ export default function EventsPage() {
   const fetchEvents = async () => {
     setIsLoading(true)
     try {
-      const res = await fetch('/api/events')
-      if (res.ok) {
-        const data = await res.json()
-        setEvents(data.events || [])
-      }
+      const res = await api.get('/api/events')
+      setEvents(res.data.events || [])
     } catch (e) {
       toast.error('Failed to fetch events')
     } finally {
@@ -47,34 +45,26 @@ export default function EventsPage() {
 
   const handleActivate = async (id) => {
     try {
-      const res = await fetch(`/api/events/${id}/activate`, { method: 'POST' })
-      if (res.ok) {
-        toast.success('Event activated')
-        refreshContext()
-        fetchEvents()
-      } else {
-        toast.error('Failed to activate')
-      }
+      await api.post(`/api/events/${id}/activate`)
+      toast.success('Event activated')
+      refreshContext()
+      fetchEvents()
     } catch (e) {
-      toast.error('Error activating event')
+      toast.error('Failed to activate')
     }
   }
 
   const handleDelete = async (id) => {
     if (!window.confirm('Are you sure you want to delete this event? This cannot be undone.')) return
     try {
-      const res = await fetch(`/api/events/${id}`, { method: 'DELETE' })
-      if (res.ok) {
-        toast.success('Event deleted')
-        if (id === activeId) {
-          refreshContext() // Will clear active event if it was deleted
-        }
-        fetchEvents()
-      } else {
-        toast.error('Failed to delete')
+      await api.delete(`/api/events/${id}`)
+      toast.success('Event deleted')
+      if (id === activeId) {
+        refreshContext()
       }
+      fetchEvents()
     } catch (e) {
-      toast.error('Error deleting event')
+      toast.error('Failed to delete')
     }
   }
 
@@ -106,11 +96,10 @@ export default function EventsPage() {
         body.append('schedule_natural', formData.schedule_text)
       }
 
-      const res = await fetch('/api/setup/context', {
-        method: 'POST',
-        body
+      const res = await api.post('/api/setup/context', body, {
+        headers: { 'Content-Type': 'multipart/form-data' }
       })
-      if (res.ok) {
+      if (res.status === 200) {
         toast.success('Event created successfully!')
         setShowCreateModal(false)
         refreshContext()

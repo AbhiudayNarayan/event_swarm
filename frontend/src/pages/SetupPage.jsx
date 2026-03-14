@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'react-hot-toast'
 import { useEventConfig } from '../EventContext'
+import { api } from '../shared'
 
 export default function SetupPage() {
   const navigate = useNavigate()
@@ -63,12 +64,11 @@ export default function SetupPage() {
       if (senderName) formData.append('organiser_name', senderName)
       if (eventHashtag) formData.append('hashtag_list', eventHashtag)
 
-      const res = await fetch('/api/setup/context', {
-        method: 'POST',
-        body: formData
+      const res = await api.post('/api/setup/context', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
       })
       
-      if (res.ok) {
+      if (res.status === 200) {
         toast.success(`Event metadata saved ✓`)
         refresh() // Pull updated data
       } else {
@@ -86,16 +86,12 @@ export default function SetupPage() {
     if (!eventId) return
     if (window.confirm('Are you sure you want to delete this event? This will erase all data and lock the agents.')) {
       try {
-        const res = await fetch(`/api/events/${eventId}`, { method: 'DELETE' })
-        if (res.ok) {
-          toast.success('Event deleted')
-          refresh()
-          navigate('/events')
-        } else {
-          toast.error('Failed to delete event')
-        }
+        await api.delete(`/api/events/${eventId}`)
+        toast.success('Event deleted')
+        refresh()
+        navigate('/events')
       } catch (err) {
-        toast.error('Error deleting event')
+        toast.error('Failed to delete event')
       }
     }
   }

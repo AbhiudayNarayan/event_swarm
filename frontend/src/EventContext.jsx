@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { API } from './shared'
 
 const EventContext = createContext(null)
 
@@ -12,6 +13,9 @@ export function EventProvider({ children }) {
   
   const [swarmEvents, setSwarmEvents] = useState([])
   const [agentStatuses, setAgentStatuses] = useState({})
+  const [hasSeenOnboarding, setHasSeenOnboarding] = useState(
+    () => localStorage.getItem('el_swarm_onboarded') === 'true'
+  )
   const [participants, setParticipants] = useState([])
   const [schedulerState, setSchedulerState] = useState({
     report: null,
@@ -33,7 +37,7 @@ export function EventProvider({ children }) {
   const fetchActiveEvent = useCallback(async () => {
     setIsLoading(true)
     try {
-      const res = await fetch('/api/events/active')
+      const res = await fetch(`${API}/api/events/active`)
       if (res.ok) {
         const data = await res.json()
         if (data.loaded) {
@@ -117,6 +121,8 @@ export function EventProvider({ children }) {
     setSwarmEvents,
     agentStatuses,
     setAgentStatuses,
+    hasSeenOnboarding,
+    setHasSeenOnboarding,
   }
 
   return <EventContext.Provider value={value}>{children}</EventContext.Provider>
