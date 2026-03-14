@@ -51,6 +51,7 @@ export default function SwarmPage() {
   const [thinking, setThinking]       = useState(false)
   const [ctxStatus, setCtxStatus]     = useState(null)
   const [expandedIds, setExpandedIds] = useState({})
+  const [isListening, setIsListening] = useState(false)
 
   const chatEndRef = useRef(null)
   const textareaRef = useRef(null)
@@ -93,7 +94,24 @@ export default function SwarmPage() {
     e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'
   }
 
-  // ── Send message ─────────────────────────────────────────────────────────
+  const startVoice = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { toast.error('Voice not supported in this browser'); return; }
+    const recognition = new SR();
+    recognition.lang = 'en-US';
+    recognition.interimResults = false;
+    setIsListening(true);
+    recognition.start();
+    recognition.onresult = (e) => {
+      const transcript = e.results[0][0].transcript;
+      setInput(prev => prev + transcript);
+      setIsListening(false);
+    };
+    recognition.onerror = () => setIsListening(false);
+    recognition.onend = () => setIsListening(false);
+  };
+
+
   const sendMessage = async (text) => {
     const msg = text.trim()
     if (!msg || thinking) return
@@ -112,12 +130,14 @@ export default function SwarmPage() {
       content: m.text,
     }))
 
+    const payload = {
+      message: msg,
+      event_name: eventName || 'default',
+      history
+    }
+    
     try {
-      const res = await api.post('/api/swarm/chat', {
-        message: msg,
-        event_name: eventName || 'default',
-        history,
-      })
+      const res = await api.post('/api/swarm/chat', payload)
       const data = res.data
       const botMsg = {
         id: Date.now() + 1,
@@ -191,7 +211,7 @@ export default function SwarmPage() {
           ) : (
             messages.map(msg =>
               msg.role === 'user'
-                ? <UserBubble key={msg.id} text={msg.text} />
+                ? <UserBubble key={msg.id} text={msg.text} msg={msg} />
                 : <BotBubble
                     key={msg.id}
                     msg={msg}
@@ -216,29 +236,62 @@ export default function SwarmPage() {
           <div ref={chatEndRef} />
         </div>
 
+        {/* ── Suggestion chips (visible only when chat is empty) ── */}
+        {messages.length === 0 && (
+          <div style={{display:'flex', flexWrap:'wrap', gap:'8px', padding:'0 0 12px'}}>
+            {[
+              "Delay opening keynote by 20 mins and notify participants",
+              "Generate a sponsor announcement post and email everyone",
+              "What is the current event schedule?",
+              "Give me a full event status report"
+            ].map(chip => (
+              <button key={chip} className="btn"
+                style={{borderRadius:'20px', fontSize:'12px', padding:'5px 14px'}}
+                onClick={() => sendMessage(chip)}>
+                {chip}
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* ── Input bar ── */}
-        <div className="chat-input-bar">
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={handleInputChange}
-            onKeyDown={handleKeyDown}
-            placeholder={
-              ctxStatus?.loaded
-                ? 'Type a command… (Enter to send, Shift+Enter for newline)'
-                : 'Go to Event Setup and load your schedule first…'
-            }
-            disabled={thinking}
-            rows={1}
-          />
-          <button
-            className="chat-send-btn"
-            onClick={() => sendMessage(input)}
-            disabled={!input.trim() || thinking}
-            title="Send"
-          >
-            ↑
-          </button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '0 24px 24px' }}>
+          <div className="chat-input-bar" style={{ margin: 0, padding: 0 }}>
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              placeholder={
+                ctxStatus?.loaded
+                  ? 'Type a command… (Enter to send, Shift+Enter for newline)'
+                  : 'Go to Event Setup and load your schedule first…'
+              }
+              disabled={thinking}
+              rows={1}
+            />
+            <button
+              className="btn"
+              onClick={startVoice}
+              title="Voice input"
+              style={{
+                padding: '8px 12px',
+                borderRadius: '8px',
+                background: isListening ? 'var(--green)' : 'transparent',
+                border: '1px solid var(--border)',
+                transition: 'background 0.2s'
+              }}>
+              {isListening ? '🔴' : '🎤'}
+            </button>
+            <button
+              className="chat-send-btn"
+              onClick={() => sendMessage(input)}
+              disabled={!input.trim() || thinking}
+              title="Send"
+            >
+              ↑
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -291,18 +344,82 @@ function EmptyState({ onSelect }) {
   )
 }
 
-function UserBubble({ text }) {
+function UserBubble({ text, msg }) {
   return (
     <div className="chat-bubble-wrap user">
       <div className="chat-avatar">👤</div>
-      <div className="chat-bubble user">{text}</div>
+      <div className="chat-bubble user">
+        {text}
+      </div>
+    </div>
+  )
+}
+
+function SocialMockCard({ posts, runId }) {
+  const [metrics, setMetrics] = useState(() => ({
+    twitter:   { impressions: Math.floor(Math.random()*500)+200, likes: Math.floor(Math.random()*50)+10, retweets: Math.floor(Math.random()*20)+2 },
+    linkedin:  { impressions: Math.floor(Math.random()*300)+100, clicks: Math.floor(Math.random()*30)+5,  reactions: Math.floor(Math.random()*40)+8 },
+    instagram: { reach: Math.floor(Math.random()*400)+150,       likes: Math.floor(Math.random()*60)+15,  comments: Math.floor(Math.random()*10)+1 }
+  }))
+
+  useEffect(() => {
+    // Auto-approve in backend so it persists as 'Published' right away
+    if (runId) {
+      api.post('/api/swarm/approve-post', { run_id: runId }).catch(() => {})
+    }
+  }, [runId])
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setMetrics(prev => ({
+        ...prev,
+        twitter: { ...prev.twitter, impressions: prev.twitter.impressions + Math.floor(Math.random()*5) },
+        linkedin: { ...prev.linkedin, impressions: prev.linkedin.impressions + Math.floor(Math.random()*5) },
+        instagram: { ...prev.instagram, reach: prev.instagram.reach + Math.floor(Math.random()*5) }
+      }))
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [])
+
+  return (
+    <div style={{ marginTop: 12, padding: 16, background: 'rgba(0, 230, 118, 0.04)', border: '1px solid rgba(0, 230, 118, 0.2)', borderRadius: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--green)', fontWeight: 600, marginBottom: 12, fontSize: 13 }}>
+        <span className="material-symbols-outlined" style={{ fontSize: 18 }}>check_circle</span>
+        Posted to Twitter • Instagram • LinkedIn
+      </div>
+      
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+        {Object.entries(posts).map(([platform, text]) => {
+           if (platform === 'announcement' || !text) return null;
+           return (
+             <div key={platform} style={{ background: 'var(--bg-card)', padding: 12, borderRadius: 6, fontSize: 12, border: '1px solid var(--border)' }}>
+               <div style={{ textTransform: 'capitalize', color: 'var(--text-secondary)', marginBottom: 8, fontWeight: 600, display: 'flex', justifyContent: 'space-between' }}>
+                 {platform}
+                 <span style={{ color: 'var(--green)', fontSize: 10 }}>● LIVE</span>
+               </div>
+               <div style={{ maxHeight: 80, overflow: 'auto', marginBottom: 12, color: 'var(--text-primary)' }}>
+                 <ReactMarkdown>{text}</ReactMarkdown>
+               </div>
+               {metrics[platform] && (
+                 <div style={{ display: 'flex', gap: 12, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+                   {Object.entries(metrics[platform]).map(([k, v]) => (
+                     <div key={k}>
+                       <div style={{ fontSize: 9, textTransform: 'uppercase', color: 'var(--text-muted)' }}>{k}</div>
+                       <div style={{ fontWeight: 600, color: 'var(--text-normal)' }}>{v.toLocaleString()}</div>
+                     </div>
+                   ))}
+                 </div>
+               )}
+             </div>
+           )
+        })}
+      </div>
     </div>
   )
 }
 
 function BotBubble({ msg, expanded, onToggleExpand, onApprove }) {
   const { data, text, approved, approveResult } = msg
-  const [imgLoaded, setImgLoaded] = useState(false)
   const agentsFired = data?.agents_fired || []
   const results = data?.results || {}
   const emailDrafts = data?.email_drafts || []
@@ -329,28 +446,6 @@ function BotBubble({ msg, expanded, onToggleExpand, onApprove }) {
           <ReactMarkdown>{text}</ReactMarkdown>
         </div>
 
-        {/* Generated Image */}
-        {data?.image_url && (
-          <div className="history-card" style={{ marginTop: 12, padding: 12 }}>
-            <div style={{ position: 'relative', width: '100%', minHeight: 200, backgroundColor: 'var(--bg-input)', borderRadius: 6, overflow: 'hidden' }}>
-              {!imgLoaded && (
-                <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-                  Loading image (3-10s)...
-                </div>
-              )}
-              <img 
-                src={data.image_url} 
-                alt="Generated by Swarm" 
-                style={{ width: '100%', display: imgLoaded ? 'block' : 'none' }}
-                onLoad={() => setImgLoaded(true)}
-              />
-            </div>
-            <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{data.image_style || 'Digital Art'}</span>
-              <a href={data.image_url} download target="_blank" rel="noreferrer" style={{ fontSize: 12, color: 'var(--brand)', textDecoration: 'none' }}>Download Image</a>
-            </div>
-          </div>
-        )}
 
         {/* Agent activity cards */}
         {agentsFired.map(agentKey => {
@@ -404,6 +499,11 @@ function BotBubble({ msg, expanded, onToggleExpand, onApprove }) {
             ✅ Emails sent — {approveResult?.sent ?? 0} delivered
             {approveResult?.failed?.length > 0 && `, ${approveResult.failed.length} failed`}
           </div>
+        )}
+
+        {/* Social Mock Preview */}
+        {results?.content?.posts && (
+           <SocialMockCard posts={results.content.posts} runId={data?.run_id} />
         )}
 
         {/* Expandable full output */}

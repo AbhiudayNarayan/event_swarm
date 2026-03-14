@@ -1,6 +1,21 @@
-import React from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useEventConfig } from '../EventContext'
+
+const AnimatedNumber = ({ value }) => {
+  const [display, setDisplay] = useState(0)
+  useEffect(() => {
+    let start = 0
+    const step = Math.ceil(value / 20)
+    const timer = setInterval(() => {
+      start += step
+      if (start >= value) { setDisplay(value); clearInterval(timer) }
+      else setDisplay(start)
+    }, 40)
+    return () => clearInterval(timer)
+  }, [value])
+  return <span>{display}</span>
+}
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -33,15 +48,15 @@ export default function Dashboard() {
 
         <div className="metrics-row">
           <div className="metric-card">
-            <div className="metric-value">3</div>
+            <div className="metric-value"><AnimatedNumber value={5} /></div>
             <div className="metric-label">Core Agents</div>
           </div>
           <div className="metric-card">
-            <div className="metric-value">1</div>
+            <div className="metric-value"><AnimatedNumber value={1} /></div>
             <div className="metric-label">Orchestrator</div>
           </div>
           <div className="metric-card">
-            <div className="metric-value">5</div>
+            <div className="metric-value"><AnimatedNumber value={25} /></div>
             <div className="metric-label">API Routes</div>
           </div>
           <div className="metric-card">
@@ -110,6 +125,38 @@ export default function Dashboard() {
               Coordinate complex multi-track calendars, propose slots, and automatically manage and resolve meeting conflicts.
             </p>
             <div style={{ color: 'var(--blue)', fontSize: '12px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              Open Interface <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>arrow_forward</span>
+            </div>
+          </div>
+
+          <div className="agent-card" onClick={() => navigate('/budget')} style={{ cursor: 'pointer' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <div className="brand-icon" style={{ background: 'linear-gradient(135deg, #f59e0b, #d97706)' }}>
+                <span className="material-symbols-outlined">payments</span>
+              </div>
+              <span className="badge badge-idle">FINANCE</span>
+            </div>
+            <h3 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '8px' }}>Budget Agent</h3>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5', flexGrow: 1, marginBottom: '24px' }}>
+              Track event expenses, categorize spending automatically, and receive alerts to prevent budget overruns.
+            </p>
+            <div style={{ color: '#f59e0b', fontSize: '12px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              Open Interface <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>arrow_forward</span>
+            </div>
+          </div>
+
+          <div className="agent-card" onClick={() => navigate('/logistics')} style={{ cursor: 'pointer' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <div className="brand-icon" style={{ background: 'linear-gradient(135deg, #f97316, #ea580c)' }}>
+                <span className="material-symbols-outlined">inventory_2</span>
+              </div>
+              <span className="badge badge-idle">OPERATIONS</span>
+            </div>
+            <h3 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '8px' }}>Logistics Agent</h3>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5', flexGrow: 1, marginBottom: '24px' }}>
+              Manage equipment requests, vendor deliveries, room readiness checks, and autonomously resolve operational issues.
+            </p>
+            <div style={{ color: '#f97316', fontSize: '12px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
               Open Interface <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>arrow_forward</span>
             </div>
           </div>

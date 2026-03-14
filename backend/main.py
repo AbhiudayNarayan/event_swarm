@@ -60,6 +60,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi.staticfiles import StaticFiles
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
 
 @app.get("/")
 def read_root():
@@ -79,28 +82,6 @@ async def content_endpoint(payload: ContentRequest):
         return {"status": "error", "message": str(e)}
 
 
-@app.post("/api/content/generate-image")
-async def generate_image(request: Request):
-    body = await request.json()
-    prompt = body.get("prompt", "")
-    style = body.get("style", "digital art")
-    event_name = body.get("event_name", "")
-    width = body.get("width", 1024)
-    height = body.get("height", 1024)
-    
-    import re
-    clean_prompt = re.sub(r"[^a-zA-Z0-9 ]", "", prompt)[:80]
-    full_prompt = f"{event_name} {clean_prompt} {style} professional high quality"
-    
-    from urllib.parse import quote
-    encoded = quote(full_prompt.strip())
-    image_url = f"https://image.pollinations.ai/prompt/{encoded}?width={width}&height={height}&nologo=true&seed=42"
-    
-    return {
-        "image_url": image_url,
-        "prompt_used": full_prompt,
-        "style": style
-    }
 
 
 @app.post("/api/participants/save")
@@ -1848,6 +1829,7 @@ class ChatRequest(BaseModel):
     message: str
     event_name: str = ""
     history: List[ChatMessage] = []
+    image: Optional[Dict[str, str]] = None
 
 
 class ApproveRequest(BaseModel):
@@ -1934,7 +1916,6 @@ async def _swarm_chat_inner(payload: ChatRequest):
             "content_agent": "Drafts engaging social media posts, announcements, and summaries.",
             "scheduler_agent": "Modifies the event schedule: delays events, handles cancellations, and resolves resource/room conflicts.",
             "email_agent": "Drafts highly personalised emails based on the participant_schedule_map. ALWAYS needs raw lists of affected participant emails to function.",
-            "image_agent": "Generates images based on descriptions.",
             "budget_agent": "Fires when user asks about budget, expenses, spending, costs, overruns, or reallocation.",
             "logistics_agent": "Fires when user asks about equipment, vendors, room readiness, delivery status, issues, or what's pending."
         },
@@ -1979,7 +1960,7 @@ Your response must exactly match this structure:
 {{
   "understood":     "A friendly, conversational reply (use this to answer casual questions or confirm actions)",
   "display_text":   "Detailed markdown response if needed (or leave empty to just use 'understood')",
-  "agents_firing":  ["scheduler_agent", "content_agent", "email_agent", "image_agent"],
+  "agents_firing":  ["scheduler_agent", "content_agent", "email_agent"],
   "scheduler_payload": {{
     "action": "cascade_delay | mark_cancelled | resource_conflict | no_change",
     "event_id": "...",
@@ -2009,6 +1990,8 @@ Your response must exactly match this structure:
   "missing_data": ""
 }}
 
+}}
+
 SCHEDULE CHANGE AWARENESS:
 - recent_actions.recent_schedule_changes contains the last 5 schedule changes made in this session.
 - If the user says "some event got delayed", "inform participants about the delay", "send reschedule notification", or similar:
@@ -2031,10 +2014,13 @@ RULES:
     ]
 
     llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
+    
+    user_content = payload.message
+
     decision_resp = llm.invoke([
         SystemMessage(content=decision_prompt),
         *history_msgs,
-        HumanMessage(content=payload.message),
+        HumanMessage(content=user_content),
     ])
 
     try:
@@ -2248,29 +2234,6 @@ Write concise, engaging posts for a {ctype} announcement. Return JSON:
             print("EMAIL ERROR:", tb.format_exc())
             results["email"] = {"summary": "", "preview": [], "error": str(exc)}
 
-    # Image agent
-    if "image_agent" in agents_firing:
-        try:
-            ip = decision.get("image_payload", {})
-            prompt = ip.get("prompt", payload.message)
-            style = ip.get("style", "digital art")
-            width = ip.get("width", 1024)
-            height = ip.get("height", 1024)
-            
-            import re
-            from urllib.parse import quote
-            clean_prompt = re.sub(r"[^a-zA-Z0-9 ]", "", prompt)[:80]
-            full_prompt = f"{event_name_str} {clean_prompt} {style} professional high quality"
-            encoded = quote(full_prompt.strip())
-            image_url = f"https://image.pollinations.ai/prompt/{encoded}?width={width}&height={height}&nologo=true&seed=42"
-            
-            final_response_fields["image_url"] = image_url
-            final_response_fields["image_prompt"] = prompt
-            final_response_fields["image_style"] = style
-            
-            results["image"] = {"summary": f"Generated image for {prompt}", "error": None}
-        except Exception as exc:
-            results["image"] = {"summary": "", "error": str(exc)}
 
     # ── Build display message ────────────────────────────────────────────────
     # Prefer GPT-4o's own display_text for natural, warm responses

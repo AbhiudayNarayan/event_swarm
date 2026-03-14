@@ -1556,3 +1556,94 @@ p.page-subtitle {
   background: rgba(0, 245, 212, 0.08);
   border-bottom: 2px solid var(--cyan);
 }
+
+/* ═══════════════════════════════════════════════════════
+   UI POLISH — Live Demo Enhancements
+   ═══════════════════════════════════════════════════════ */
+
+/* 1. Card hover lift */
+.agent-card, .metric-card, .history-card {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.metric-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 28px rgba(0,0,0,0.35);
+}
+
+/* 2. Glowing primary button */
+.btn-primary {
+  transition: box-shadow 0.2s ease, transform 0.1s ease;
+}
+.btn-primary:hover:not(:disabled) {
+  box-shadow: 0 0 18px rgba(56, 138, 221, 0.45);
+  transform: translateY(-1px);
+}
+.btn-primary:active { transform: translateY(0); }
+
+/* 3. Badge status colors — enhanced */
+.badge-running {
+  background: rgba(29,158,117,0.15);
+  color: var(--green);
+  border: 1px solid rgba(29,158,117,0.4);
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+.badge-done {
+  background: rgba(56,138,221,0.12);
+  color: var(--cyan);
+  border: 1px solid rgba(56,138,221,0.3);
+}
+.badge-error {
+  background: rgba(220,53,69,0.12);
+  color: var(--red);
+  border: 1px solid rgba(220,53,69,0.3);
+}
+.badge-idle {
+  background: rgba(136,135,128,0.1);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+@keyframes pulse-dot {
+  0%,100% { opacity:1; } 50% { opacity:0.5; }
+}
+
+/* 4. Page fade-in */
+@keyframes pageFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.page-body {
+  animation: pageFadeIn 0.2s ease forwards;
+}
+
+/* 5. Slim custom scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-active);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--cyan); }
+
+/* 6. Chat bubble polish */
+.chat-bubble.user {
+  background: linear-gradient(135deg, var(--blue), var(--purple));
+  box-shadow: 0 4px 14px rgba(56,138,221,0.25);
+}
+.chat-bubble.bot {
+  border-left: 3px solid var(--cyan);
+  border-radius: 0 12px 12px 12px;
+}
+
+/* 7. Smooth tab/button transitions */
+.tab-btn, .btn {
+  transition: all 0.18s ease;
+}
+
+/* 8. Custom React Hot Toast style */
+.go2072408551 {
+  background: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--cyan) !important;
+  border-radius: 8px !important;
+  font-size: 13px !important;
+}
