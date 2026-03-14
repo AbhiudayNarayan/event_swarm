@@ -20,7 +20,8 @@ export default function EventsPage() {
     participants_method: 'upload', // 'upload' | 'text'
     participants_file: null,
     participants_text: '',
-    schedule_method: 'text', // 'upload' | 'text'
+    schedule_method: 'upload', // 'upload' | 'text'
+    schedule_file: null,
     schedule_text: '',
   })
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -79,6 +80,11 @@ export default function EventsPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (step < 3) {
+      if (step === 1 && !formData.event_name.trim()) return toast.error('Event Name is required')
+      setStep(s => s + 1)
+      return
+    }
     setIsSubmitting(true)
     try {
       const body = new FormData()
@@ -94,7 +100,9 @@ export default function EventsPage() {
         body.append('participants_natural', formData.participants_text)
       }
 
-      if (formData.schedule_method === 'text') {
+      if (formData.schedule_method === 'upload' && formData.schedule_file) {
+        body.append('schedule_file', formData.schedule_file)
+      } else if (formData.schedule_method === 'text') {
         body.append('schedule_natural', formData.schedule_text)
       }
 
@@ -110,7 +118,7 @@ export default function EventsPage() {
         setFormData({
           event_name: '', event_date: '', venue: '', target_audience: '', description: '',
           participants_method: 'upload', participants_file: null, participants_text: '',
-          schedule_method: 'text', schedule_text: ''
+          schedule_method: 'upload', schedule_file: null, schedule_text: ''
         })
         setStep(1)
       } else {
@@ -239,7 +247,7 @@ export default function EventsPage() {
               </button>
             </div>
             
-            <form onSubmit={handleSubmit} style={{ padding: '32px' }}>
+            <div style={{ padding: '32px' }}>
               {/* STAGE HEADER */}
               <div style={{ display: 'flex', gap: '8px', marginBottom: '32px' }}>
                 {[1, 2, 3].map(s => (
@@ -253,16 +261,16 @@ export default function EventsPage() {
                   <h3 style={{ fontSize: '18px', color: 'var(--text-primary)', marginBottom: '8px' }}>1. Basic Details</h3>
                   <div>
                     <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-secondary)' }}>Event Name *</label>
-                    <input type="text" required value={formData.event_name} onChange={e => setFormData({...formData, event_name: e.target.value})} style={{ width: '100%', padding: '12px 16px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: '12px', color: 'white', fontSize: '15px' }} placeholder="e.g. Neurathon '26" />
+                    <input type="text" value={formData.event_name} onChange={e => setFormData({...formData, event_name: e.target.value})} onKeyDown={e => { if(e.key === 'Enter') { e.preventDefault(); if (formData.event_name.trim()) setStep(s => s + 1); else toast.error('Event Name is required'); } }} style={{ width: '100%', padding: '12px 16px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: '12px', color: 'white', fontSize: '15px' }} placeholder="e.g. Neurathon '26" />
                   </div>
                   <div style={{ display: 'flex', gap: '16px' }}>
                     <div style={{ flex: 1 }}>
                       <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-secondary)' }}>Dates</label>
-                      <input type="text" value={formData.event_date} onChange={e => setFormData({...formData, event_date: e.target.value})} style={{ width: '100%', padding: '12px 16px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: '12px', color: 'white', fontSize: '15px' }} placeholder="e.g. Oct 12 - Oct 14" />
+                      <input type="text" value={formData.event_date} onChange={e => setFormData({...formData, event_date: e.target.value})} onKeyDown={e => { if(e.key === 'Enter') { e.preventDefault(); setStep(s => s + 1); } }} style={{ width: '100%', padding: '12px 16px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: '12px', color: 'white', fontSize: '15px' }} placeholder="e.g. Oct 12 - Oct 14" />
                     </div>
                     <div style={{ flex: 1 }}>
                       <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-secondary)' }}>Venue</label>
-                      <input type="text" value={formData.venue} onChange={e => setFormData({...formData, venue: e.target.value})} style={{ width: '100%', padding: '12px 16px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: '12px', color: 'white', fontSize: '15px' }} placeholder="e.g. IIT-B Main Campus" />
+                      <input type="text" value={formData.venue} onChange={e => setFormData({...formData, venue: e.target.value})} onKeyDown={e => { if(e.key === 'Enter') { e.preventDefault(); setStep(s => s + 1); } }} style={{ width: '100%', padding: '12px 16px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: '12px', color: 'white', fontSize: '15px' }} placeholder="e.g. IIT-B Main Campus" />
                     </div>
                   </div>
                   <div>
@@ -309,16 +317,26 @@ export default function EventsPage() {
                   <p style={{ color: 'var(--text-secondary)', fontSize: '14px', marginTop: '-12px' }}>Now add your event schedule in plain english.</p>
                   
                   <div style={{ display: 'flex', gap: '8px', background: 'var(--bg-card)', padding: '4px', borderRadius: '12px', border: '1px solid var(--border)' }}>
+                    <button type="button" onClick={() => setFormData({...formData, schedule_method: 'upload'})} style={{ flex: 1, padding: '10px', background: formData.schedule_method === 'upload' ? 'var(--bg-surface)' : 'transparent', color: formData.schedule_method === 'upload' ? 'var(--blue)' : 'var(--text-secondary)', border: 'none', borderRadius: '8px', fontWeight: '500', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', transition: 'all 0.2s' }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>upload_file</span> File Upload
+                    </button>
                     <button type="button" onClick={() => setFormData({...formData, schedule_method: 'text'})} style={{ flex: 1, padding: '10px', background: formData.schedule_method === 'text' ? 'var(--bg-surface)' : 'transparent', color: formData.schedule_method === 'text' ? 'var(--blue)' : 'var(--text-secondary)', border: 'none', borderRadius: '8px', fontWeight: '500', cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', transition: 'all 0.2s' }}>
                       <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>chat</span> Plain English
                     </button>
-                    {/* Simplified for demo, can optionally add file upload here too */}
                   </div>
 
-                  <div>
-                    <textarea rows="8" placeholder="e.g. Day 1 starts with a Keynote at 9 AM in Hall A by Dr. Smith. Then at 10 AM we have the Python Workshop in Room 101..." value={formData.schedule_text} onChange={e => setFormData({...formData, schedule_text: e.target.value})} style={{ width: '100%', padding: '16px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: '12px', color: 'white', fontSize: '15px', resize: 'vertical', fontFamily: 'monospace' }} />
-                    <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>GPT-4o will instantly convert your prose into scheduled events with times and rooms.</p>
-                  </div>
+                  {formData.schedule_method === 'upload' ? (
+                    <div style={{ border: '2px dashed var(--border)', borderRadius: '16px', padding: '40px 20px', textAlign: 'center', background: 'var(--bg-input)' }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: '40px', color: 'var(--text-muted)', marginBottom: '16px' }}>event_note</span>
+                      <p style={{ marginBottom: '16px', color: 'var(--text-secondary)' }}>Upload your schedule CSV or JSON file</p>
+                      <input type="file" onChange={e => setFormData({...formData, schedule_file: e.target.files[0]})} accept=".csv,.json" style={{ color: 'var(--text-primary)', background: 'var(--bg-card)', padding: '8px', borderRadius: '8px' }} />
+                    </div>
+                  ) : (
+                    <div>
+                      <textarea rows="8" placeholder="e.g. Day 1 starts with a Keynote at 9 AM in Hall A by Dr. Smith. Then at 10 AM we have the Python Workshop in Room 101..." value={formData.schedule_text} onChange={e => setFormData({...formData, schedule_text: e.target.value})} style={{ width: '100%', padding: '16px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: '12px', color: 'white', fontSize: '15px', resize: 'vertical', fontFamily: 'monospace' }} />
+                      <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>GPT-4o will instantly convert your prose into scheduled events with times and rooms.</p>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -334,7 +352,7 @@ export default function EventsPage() {
                     setStep(s => s + 1)
                   }} style={{ padding: '12px 24px', background: 'var(--text-primary)', color: 'var(--bg-base)', border: 'none', borderRadius: '12px', cursor: 'pointer', fontWeight: '600' }}>Continue</button>
                 ) : (
-                  <button type="submit" disabled={isSubmitting} style={{ padding: '12px 32px', background: 'linear-gradient(135deg, var(--blue), var(--purple))', color: 'white', border: 'none', borderRadius: '12px', cursor: 'pointer', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <button type="button" onClick={handleSubmit} disabled={isSubmitting} style={{ padding: '12px 32px', background: 'linear-gradient(135deg, var(--blue), var(--purple))', color: 'white', border: 'none', borderRadius: '12px', cursor: 'pointer', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
                     {isSubmitting ? (
                       <><span className="material-symbols-outlined" style={{ animation: 'spin 1s linear infinite' }}>autorenew</span> Creating...</>
                     ) : (
@@ -343,7 +361,7 @@ export default function EventsPage() {
                   </button>
                 )}
               </div>
-            </form>
+            </div>
           </div>
         </div>
       )}

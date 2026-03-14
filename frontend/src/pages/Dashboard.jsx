@@ -1,27 +1,20 @@
-import React, { useState, useEffect } from 'react'
+import React from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useEventConfig } from '../EventContext'
 
 export default function Dashboard() {
   const navigate = useNavigate()
-  const [config, setConfig] = useState(null)
-  const isSetupComplete = Boolean(config)
-
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('swarm_event_config')
-      if (saved) {
-        setConfig(JSON.parse(saved))
-      }
-    } catch (e) {}
-  }, [])
+  const { eventName, eventDate, venue } = useEventConfig()
+  
+  const isSetupComplete = Boolean(eventName && eventDate && venue)
 
   return (
     <div>
-      {isSetupComplete && (
+      {eventName && eventDate && venue && (
         <div className="banner-conflict success" style={{ background: 'rgba(0, 230, 118, 0.1)', borderColor: 'rgba(0, 230, 118, 0.3)', color: 'var(--green)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span className="material-symbols-outlined">check_circle</span>
-            <span>✓ Event configured: {config.eventName} — {config.eventDate} — {config.venue}</span>
+            <span>✓ Event configured: {eventName} — {eventDate} — {venue}</span>
           </div>
           <button onClick={() => navigate('/setup')} style={{ background: 'none', border: 'none', color: 'var(--green)', textDecoration: 'underline', fontSize: '13px', cursor: 'pointer' }}>
             Edit Setup

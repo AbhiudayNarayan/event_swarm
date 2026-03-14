@@ -1,5 +1,7 @@
 from pathlib import Path
 import json
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -10,8 +12,12 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
 
-from agents.content_agent import run_content_agent
+from dotenv import load_dotenv
+load_dotenv()
 
+from db import get_db, serialize_doc, fresh_outputs
+
+from agents.content_agent import run_content_agent
 from agents.qa_agent import run_qa_agent
 from agents.scheduler_agent import run_scheduler_agent
 from orchestrator import swarm_app
@@ -764,77 +770,192 @@ async def get_sample_sponsors():
 
 
 # ════════════════════════════════════════════════════════════════
-# FILE-BASED EVENT STORE  —  uploads/events/{event_id}.json
-#                             uploads/active_event.txt
+# MONGODB EVENT STORE  —  db.events collection
 # ════════════════════════════════════════════════════════════════
 
-EVENTS_DIR = Path(__file__).parent / "uploads" / "events"
-ACTIVE_FILE = Path(__file__).parent / "uploads" / "active_event.txt"
-EVENTS_DIR.mkdir(parents=True, exist_ok=True)
-
-# In-memory mirror (also kept for backward compat with older code)
-EVENT_STORE: Dict[str, Dict[str, Any]] = {}
+EVENTS_DIR = Path(__file__).parent / "uploads" / "events"  # kept for migration only
 
 
 def _event_id_from_name(name: str) -> str:
-    """Convert display name → safe file slug.  'Neurathon '26' → 'neurathon_26'"""
+    """Convert display name → safe slug.  'Neurathon '26' → 'neurathon_26'"""
     import re
     slug = re.sub(r"[^\w\s-]", "", name.lower()).strip()
     return re.sub(r"[\s-]+", "_", slug) or "event"
 
 
-def _load_event_file(event_id: str) -> Optional[Dict]:
-    p = EVENTS_DIR / f"{event_id}.json"
-    if p.exists():
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return None
+async def _db_get_active_event() -> Optional[Dict]:
+    """Fresh read of the active event from MongoDB — always use this, never app.state alone."""
+    db = get_db()
+    doc = await db.events.find_one({"is_active": True})
+    return serialize_doc(doc) if doc else None
 
 
-def _save_event_file(event_id: str, data: Dict) -> None:
-    p = EVENTS_DIR / f"{event_id}.json"
-    p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+async def _db_save_event(event_id: str, data: Dict, make_active: bool = False) -> None:
+    """Upsert an event document into MongoDB."""
+    db = get_db()
+    data["event_id"] = event_id
+    if make_active:
+        # Deactivate all others first
+        await db.events.update_many({}, {"$set": {"is_active": False}})
+        data["is_active"] = True
+    if "outputs" not in data:
+        data["outputs"] = fresh_outputs()
+    await db.events.replace_one({"event_id": event_id}, data, upsert=True)
 
 
-def _get_active_event_id() -> Optional[str]:
-    if ACTIVE_FILE.exists():
-        return ACTIVE_FILE.read_text(encoding="utf-8").strip() or None
-    return None
+async def _db_load_event(event_id: str) -> Optional[Dict]:
+    """Load a single event by event_id from MongoDB."""
+    db = get_db()
+    doc = await db.events.find_one({"event_id": event_id})
+    return serialize_doc(doc) if doc else None
 
 
-def _set_active_event_id(event_id: str) -> None:
-    ACTIVE_FILE.write_text(event_id, encoding="utf-8")
+async def _db_list_events() -> List[Dict]:
+    """List summary cards for all events."""
+    db = get_db()
+    events = []
+    async for doc in db.events.find({}).sort("event_name", 1):
+        d = serialize_doc(doc)
+        events.append({
+            "event_id":          d.get("event_id", ""),
+            "event_name":        d.get("event_name", ""),
+            "tagline":           d.get("tagline", ""),
+            "venue":             d.get("venue", ""),
+            "city":              d.get("city", ""),
+            "dates":             d.get("dates", {}),
+            "expected_footfall": d.get("expected_footfall", 0),
+            "events_count":      len(d.get("schedule", [])),
+            "participants_count": len(d.get("participants", [])),
+            "sponsors_count":    len(d.get("sponsors", [])),
+            "rooms_count":       len(d.get("rooms", [])),
+            "is_active":         d.get("is_active", False),
+        })
+    return events
 
 
-def _load_all_events_into_store() -> None:
-    """Load every event JSON file into EVENT_STORE on startup."""
-    EVENT_STORE.clear()
-    for p in EVENTS_DIR.glob("*.json"):
+async def _migrate_json_files_to_mongo():
+    """One-time migration: if db.events is empty but JSON files exist, import them."""
+    db = get_db()
+    count = await db.events.count_documents({})
+    if count > 0:
+        return  # already have data
+
+    if not EVENTS_DIR.exists():
+        return
+
+    active_file = Path(__file__).parent / "uploads" / "active_event.txt"
+    active_id = None
+    if active_file.exists():
+        active_id = active_file.read_text(encoding="utf-8").strip() or None
+
+    for p in sorted(EVENTS_DIR.glob("*.json")):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             eid = p.stem
-            EVENT_STORE[eid] = data
+            data["event_id"] = eid
+            data["is_active"] = (eid == active_id)
+            if "outputs" not in data:
+                data["outputs"] = fresh_outputs()
+            await db.events.insert_one(data)
         except Exception:
             pass
 
 
-# ── startup: read active_event.txt → populate app.state ─────────────────────
+# ── startup: migrate JSON → Mongo, load active event ────────────────────────
 
 @app.on_event("startup")
 async def startup_load_active_event():
-    _load_all_events_into_store()
-    eid = _get_active_event_id()
-    if eid and eid in EVENT_STORE:
-        app.state.active_event = EVENT_STORE[eid]
-        app.state.active_event_id = eid
+    await _migrate_json_files_to_mongo()
+    ev = await _db_get_active_event()
+    if ev:
+        app.state.active_event = ev
+        app.state.active_event_id = ev.get("event_id")
     else:
         app.state.active_event = {}
         app.state.active_event_id = None
 
 
 # ── Rich context builder ─────────────────────────────────────────────────────
+
+
+def _normalize_schedule(raw) -> List[Dict]:
+    """Ensure schedule is always a flat list of event dicts.
+
+    The MongoDB document may store the schedule as:
+      - a list of dicts  (expected)              → return as-is
+      - a nested dict with an inner 'schedule' or 'events' key → extract the inner list
+    """
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, dict):
+        # Try common inner keys
+        for key in ("schedule", "events"):
+            inner = raw.get(key)
+            if isinstance(inner, list):
+                return inner
+        return []
+        return []
+    return []
+
+
+def _build_participant_schedule_map(schedule: List[Dict], participants: List[Dict]) -> Dict[str, Any]:
+    """Map each participant email to their profile and specific event schedule.
+    
+    Checks both sides mapping:
+    - event.assigned_emails[]
+    - participant.registered_events[]
+    If neither exists for any event, assumes they are invited to all general events.
+    """
+    pax_map = {}
+    
+    # 1. Initialize profile for each participant
+    for p in participants:
+        if not isinstance(p, dict): continue
+        email = p.get("email", "").strip().lower()
+        if not email: continue
+        
+        pax_map[email] = {
+            "name": p.get("name", "Participant"),
+            "role": p.get("role", "participant"),
+            "team": p.get("team_name", ""),
+            "track": p.get("track", ""),
+            "events": []
+        }
+        
+    # 2. Map events to participants
+    for e in schedule:
+        if not isinstance(e, dict): continue
+        
+        evt_id = e.get("id", "")
+        assigned_emails = [em.strip().lower() for em in e.get("assigned_emails", [])]
+        
+        event_mini = {
+            "name": e.get("name", "Unnamed Event"),
+            "time": f"{e.get('start_time', '')}-{e.get('end_time', '')}".strip("-"),
+            "room": e.get("room", "TBD")
+        }
+        
+        for p in participants:
+            if not isinstance(p, dict): continue
+            email = p.get("email", "").strip().lower()
+            if not email or email not in pax_map: continue
+            
+            # Check if participant is assigned to this event
+            is_assigned = email in assigned_emails
+            # Or if participant document says they registered for it
+            registered_events = p.get("registered_events", [])
+            if evt_id and evt_id in registered_events:
+                is_assigned = True
+                
+            # Fallback: if data has no assignments at all, assign to all events (for demo purposes)
+            if not assigned_emails and not registered_events:
+                is_assigned = True
+                
+            if is_assigned:
+                pax_map[email]["events"].append(event_mini)
+
+    return pax_map
+
 
 def _build_agent_context(event: Dict) -> str:
     """Build a structured system-prompt context block from a full event dict."""
@@ -855,7 +976,7 @@ def _build_agent_context(event: Dict) -> str:
     branding   = event.get("branding", {})
     hashtags   = " ".join(branding.get("hashtags", []))
 
-    schedule     = event.get("schedule", [])
+    schedule     = _normalize_schedule(event.get("schedule", []))
     participants = event.get("participants", [])
     rooms        = event.get("rooms", [])
     resources    = event.get("resources", [])
@@ -865,17 +986,19 @@ def _build_agent_context(event: Dict) -> str:
     # People counts per role
     role_counts: Dict[str, int] = {}
     for p in participants:
-        r = p.get("role", "participant")
-        role_counts[r] = role_counts.get(r, 0) + 1
+        if isinstance(p, dict):
+            r = p.get("role", "participant")
+            role_counts[r] = role_counts.get(r, 0) + 1
 
     # Next upcoming event
     from datetime import datetime
     now_str = datetime.now().strftime("%H:%M")
-    upcoming = [e for e in schedule if e.get("status") in ("upcoming", "scheduled", "")]
+    
+    upcoming = [e for e in schedule if isinstance(e, dict) and e.get("status") in ("upcoming", "scheduled", "")]
     upcoming.sort(key=lambda e: (e.get("day", 99), e.get("start_time", "99:99")))
     next_ev = upcoming[0] if upcoming else None
     next_line = (
-        f"Next: {next_ev['name']} at {next_ev.get('start_time','')} "
+        f"Next: {next_ev.get('name','?')} at {next_ev.get('start_time','')} "
         f"in {next_ev.get('room','')} (Day {next_ev.get('day','')})"
         if next_ev else "No upcoming events."
     )
@@ -884,22 +1007,28 @@ def _build_agent_context(event: Dict) -> str:
     sched_lines = []
     days: Dict[int, list] = {}
     for e in schedule:
-        d = e.get("day", 1)
-        days.setdefault(d, []).append(e)
+        if isinstance(e, dict):
+            d = e.get("day", 1)
+            days.setdefault(d, []).append(e)
     for d in sorted(days.keys()):
         evs = days[d]
         sched_lines.append(f"  Day {d}: {len(evs)} events → " +
-                           ", ".join(f"{e.get('name','')} ({e.get('start_time','')}–{e.get('end_time','')}) @{e.get('room','')}" for e in evs[:4]) +
+                           ", ".join(f"{e.get('name','')} ({e.get('start_time','')}–{e.get('end_time','')}) @{e.get('room','')}" for e in evs[:4] if isinstance(e, dict)) +
                            (f" +{len(evs)-4} more" if len(evs) > 4 else ""))
 
     # Sponsors
     sponsor_lines = []
     for s in sponsors:
-        sponsor_lines.append(f"  {s.get('company','?')} [{s.get('tier','?')} tier] — contact: {s.get('contact_email','?')}")
+        if isinstance(s, dict):
+            sponsor_lines.append(f"  {s.get('company','?')} [{s.get('tier','?')} tier] — contact: {s.get('contact_email','?')}")
 
     # Resources
-    proj_count = sum(1 for r in resources if "projector" in r.get("type", "").lower())
-    mic_count  = sum(1 for r in resources if "mic" in r.get("type", "").lower())
+    proj_count = sum(1 for r in resources if isinstance(r, dict) and "projector" in r.get("type", "").lower())
+    mic_count  = sum(1 for r in resources if isinstance(r, dict) and "mic" in r.get("type", "").lower())
+
+    # Build Participant Map
+    participant_map = _build_participant_schedule_map(schedule, participants)
+    participant_map_json = json.dumps(participant_map, indent=2) if participant_map else "{}"
 
     ctx = f"""You are managing: {name}{"— " + tagline if tagline else ""}
 Theme: {theme or "N/A"} | Dates: {start_d} to {end_d} ({total_days} days) | Venue: {venue}, {city}
@@ -910,6 +1039,10 @@ SCHEDULE: {len(schedule)} total events across {len(days)} days in {len(rooms) or
 {chr(10).join(sched_lines) if sched_lines else "  (No schedule loaded yet)"}
 {next_line}
 
+PARTICIPANT SCHEDULE MAP:
+This map ties every participant to their personal list of events:
+{participant_map_json}
+
 PEOPLE: {len(participants)} total
   Participants: {role_counts.get("participant",0)} | Mentors: {role_counts.get("mentor",0)} | Judges: {role_counts.get("judge",0)} | Speakers: {role_counts.get("speaker",0)} | Volunteers: {role_counts.get("volunteer",0)}
 
@@ -918,7 +1051,7 @@ SPONSORS ({len(sponsors)}):
 
 RESOURCES: Projectors: {proj_count} | Mics: {mic_count} | Total resources: {len(resources)}
 
-ROOMS ({len(rooms)}): {", ".join(r.get("name","?") for r in rooms) or "Not loaded yet"}
+ROOMS ({len(rooms)}): {", ".join(r.get("name","?") for r in rooms if isinstance(r, dict)) or "Not loaded yet"}
 
 CONTENT PLAN: Countdown starts: {content_plan.get("countdown_posts_start","?")} days before | Post times: {content_plan.get("posting_times",{})}
 """
@@ -932,41 +1065,24 @@ CONTENT PLAN: Countdown starts: {content_plan.get("countdown_posts_start","?")} 
 @app.get("/api/events")
 async def list_events():
     """Return summary cards for all stored events."""
-    events = []
-    active_id = _get_active_event_id()
-    for p in sorted(EVENTS_DIR.glob("*.json")):
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-            eid = p.stem
-            events.append({
-                "event_id":          eid,
-                "event_name":        data.get("event_name", eid),
-                "tagline":           data.get("tagline", ""),
-                "venue":             data.get("venue", ""),
-                "city":              data.get("city", ""),
-                "dates":             data.get("dates", {}),
-                "expected_footfall": data.get("expected_footfall", 0),
-                "events_count":      len(data.get("schedule", [])),
-                "participants_count": len(data.get("participants", [])),
-                "sponsors_count":    len(data.get("sponsors", [])),
-                "rooms_count":       len(data.get("rooms", [])),
-                "is_active":         (eid == active_id),
-            })
-        except Exception:
-            pass
+    events = await _db_list_events()
+    active_id = None
+    for e in events:
+        if e.get("is_active"):
+            active_id = e["event_id"]
+            break
     return {"events": events, "active_event_id": active_id}
 
 
 @app.get("/api/events/active")
 async def get_active_event():
     """Return summary for the currently active event (for EventContext)."""
-    ev = getattr(app.state, "active_event", {})
-    eid = getattr(app.state, "active_event_id", None)
+    ev = await _db_get_active_event()
     if not ev:
         return {"loaded": False, "event_id": None, "event_name": None}
     return {
         "loaded":             True,
-        "event_id":           eid,
+        "event_id":           ev.get("event_id"),
         "event_name":         ev.get("event_name", ""),
         "tagline":            ev.get("tagline", ""),
         "venue":              ev.get("venue", ""),
@@ -978,13 +1094,15 @@ async def get_active_event():
         "sponsors_count":     len(ev.get("sponsors", [])),
         "organiser":          ev.get("organiser", {}),
         "branding":           ev.get("branding", {}),
+        "schedule":           ev.get("schedule", []),
+        "participants":       ev.get("participants", []),
     }
 
 
 @app.get("/api/events/{event_id}")
 async def get_event(event_id: str):
     """Return full event data for a given event_id."""
-    data = _load_event_file(event_id)
+    data = await _db_load_event(event_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found")
     return data
@@ -992,34 +1110,32 @@ async def get_event(event_id: str):
 
 @app.post("/api/events/{event_id}/activate")
 async def activate_event(event_id: str):
-    """Set the active event. Loads it into app.state from disk."""
-    data = _load_event_file(event_id)
+    """Set the active event via MongoDB is_active flag."""
+    data = await _db_load_event(event_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found")
-    _set_active_event_id(event_id)
-    app.state.active_event = data
+    db = get_db()
+    await db.events.update_many({}, {"$set": {"is_active": False}})
+    await db.events.update_one({"event_id": event_id}, {"$set": {"is_active": True}})
+    # Refresh app.state
+    fresh = await _db_get_active_event()
+    app.state.active_event = fresh or {}
     app.state.active_event_id = event_id
-    EVENT_STORE[event_id] = data
-    EVENT_STORE["default"] = data
     return {"status": "ok", "active_event_id": event_id, "event_name": data.get("event_name")}
 
 
 @app.delete("/api/events/{event_id}")
 async def delete_event(event_id: str):
-    """Delete an event JSON file.  Clears active pointer if needed."""
-    p = EVENTS_DIR / f"{event_id}.json"
-    if not p.exists():
+    """Delete an event from MongoDB. Clears active if needed."""
+    db = get_db()
+    existing = await _db_load_event(event_id)
+    if not existing:
         raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found")
-    p.unlink()
-    EVENT_STORE.pop(event_id, None)
-
-    # If we just deleted the active event, clear the pointer
-    if _get_active_event_id() == event_id:
-        ACTIVE_FILE.unlink(missing_ok=True)
+    was_active = existing.get("is_active", False)
+    await db.events.delete_one({"event_id": event_id})
+    if was_active:
         app.state.active_event = {}
         app.state.active_event_id = None
-        EVENT_STORE.pop("default", None)
-
     return {"status": "deleted", "event_id": event_id}
 
 
@@ -1066,19 +1182,25 @@ def _parse_schedule(raw: str) -> List[Dict]:
             raw = raw[4:]
         raw = raw.strip()
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            valid = [x for x in parsed if isinstance(x, dict)]
+            if valid: return valid
     except Exception:
         pass
     # GPT fallback
     try:
-        return _gpt_parse(
+        parsed_gpt = _gpt_parse(
             "Convert this schedule data to a JSON array of events. Each event must have: "
             "id (e001…), name, type (keynote/workshop/hackathon/panel/ceremony/networking/cultural), "
             "day (int), date, start_time (HH:MM), end_time (HH:MM), room, track, speaker_id, "
             "description, capacity (int), registered (int), status (upcoming), "
-            "equipment (list), conflict (bool). Return ONLY the raw JSON array.",
+            "equipment (list), conflict (bool). Return ONLY the raw JSON array. DO NOT output strings.",
             raw,
         )
+        if isinstance(parsed_gpt, list):
+            return [x for x in parsed_gpt if isinstance(x, dict)]
+        return []
     except Exception:
         return []
 
@@ -1159,6 +1281,7 @@ async def save_setup_context(
     twitter: str = Form(""),
     wifi_password: str = Form(""),
     # schedule — three intake paths
+    schedule_file: Optional[UploadFile] = File(None),
     schedule_json: str = Form(""),
     schedule_natural: str = Form(""),
     # participants — three intake paths
@@ -1177,7 +1300,7 @@ async def save_setup_context(
     event_id = _event_id_from_name(event_name) if event_name.strip() else "event"
 
     # Load existing data if updating
-    existing = _load_event_file(event_id) or {}
+    existing = (await _db_load_event(event_id)) or {}
 
     # Date range
     start_date = event_date  # kept for backward compat (single date)
@@ -1218,6 +1341,10 @@ async def save_setup_context(
     # ── Schedule ─────────────────────────────────────────────────────────────
     events: List[Dict] = existing.get("schedule", [])
     raw_sched = schedule_json.strip() or schedule_natural.strip()
+    if schedule_file and schedule_file.filename:
+        sched_bytes = await schedule_file.read()
+        raw_sched = sched_bytes.decode("utf-8", errors="replace")
+
     if raw_sched:
         parsed = _parse_schedule(raw_sched)
         if parsed:
@@ -1296,12 +1423,10 @@ async def save_setup_context(
         "content_plan": content_plan,
     }
 
-    _save_event_file(event_id, full_event)
-    _set_active_event_id(event_id)
-    app.state.active_event = full_event
+    await _db_save_event(event_id, full_event, make_active=True)
+    fresh = await _db_get_active_event()
+    app.state.active_event = fresh or full_event
     app.state.active_event_id = event_id
-    EVENT_STORE[event_id] = full_event
-    EVENT_STORE["default"] = full_event
 
     role_counts: Dict[str, int] = {}
     for p in participants:
@@ -1326,15 +1451,14 @@ async def save_setup_context(
 
 @app.get("/api/setup/context/status")
 async def context_status(event_name: str = ""):
-    """Check if context has been loaded for a given event_name. Reads from file store."""
-    ev = getattr(app.state, "active_event", {})
-    eid = getattr(app.state, "active_event_id", None)
+    """Check if context has been loaded for a given event_name. Reads from MongoDB."""
+    ev = await _db_get_active_event() or {}
+    eid = ev.get("event_id") if ev else None
 
     # If a specific event_name was requested, try to find it
     if event_name.strip():
-        # Try exact event_id match first
         candidate_id = _event_id_from_name(event_name)
-        candidate = _load_event_file(candidate_id) or ev
+        candidate = (await _db_load_event(candidate_id)) or ev
     else:
         candidate = ev
 
@@ -1371,18 +1495,22 @@ class ApproveRequest(BaseModel):
 @app.post("/api/swarm/chat")
 async def swarm_chat(payload: ChatRequest):
     """Natural language → GPT-4o decides agents → fires them → returns results."""
+    import traceback as _tb
+    try:
+        return await _swarm_chat_inner(payload)
+    except Exception as exc:
+        print(f"[swarm_chat] UNHANDLED ERROR:\n{_tb.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+async def _swarm_chat_inner(payload: ChatRequest):
     from dotenv import load_dotenv
     load_dotenv()
     from langchain_openai import ChatOpenAI
     from langchain_core.messages import SystemMessage, HumanMessage
 
-    # Always use the app.state active event (set by activate or save)
-    ev = getattr(app.state, "active_event", {})
-
-    # Fallback: try EVENT_STORE
-    if not ev:
-        key = _event_id_from_name(payload.event_name) if payload.event_name.strip() else "default"
-        ev = EVENT_STORE.get(key) or EVENT_STORE.get("default", {})
+    # ── ALWAYS do a fresh DB read — app.state can go stale between requests ──
+    ev = await _db_get_active_event()
 
     if not ev:
         return {
@@ -1395,59 +1523,72 @@ async def swarm_chat(payload: ChatRequest):
         }
 
     context_block = _build_agent_context(ev)
-    schedule   = ev.get("schedule", [])
+    schedule   = _normalize_schedule(ev.get("schedule", []))
     pax        = ev.get("participants", [])
     sponsors   = ev.get("sponsors", [])
     email_tmpl = ev.get("email_template", "Hi {name}, here is an update from {event_name}.")
+    
+    # Build Participant Map dynamically
+    pax_map = _build_participant_schedule_map(schedule, pax)
+    
+    # Gather recent actions
+    outputs = ev.get("outputs", {})
+    recent_actions = {
+        "recent_emails": outputs.get("email_drafts", [])[-5:],
+        "recent_schedule_changes": outputs.get("schedule_changes", [])[-5:]
+    }
 
     event_name_str = ev.get("event_name", "your event")
-    event_count = len(schedule)
-    participant_count = len(pax)
-    day_set = set(e.get("day", 1) for e in schedule) if schedule else {1}
-    day_count = len(day_set)
     start_date = ev.get("start_date", "TBD")
     end_date = ev.get("end_date", start_date)
     venue = ev.get("venue", "TBD")
 
+    # ── Orchestrator Proactive Intelligence: Build Full Context ──────────────
+    full_context = {
+        "event_summary": {
+            "name": event_name_str,
+            "dates": f"{start_date} to {end_date}",
+            "venue": venue,
+            "total_events": len(schedule),
+            "total_participants": len(pax)
+        },
+        "participant_schedule_map": pax_map,
+        "conflict_summary": ev.get("conflict_summary", []),
+        "recent_actions": recent_actions,
+        "agent_capabilities": {
+            "content_agent": "Drafts engaging social media posts, announcements, and summaries.",
+            "scheduler_agent": "Modifies the event schedule: delays events, handles cancellations, and resolves resource/room conflicts.",
+            "email_agent": "Drafts highly personalised emails based on the participant_schedule_map. ALWAYS needs raw lists of affected participant emails to function."
+        }
+    }
+
     # ── Step 1: GPT-4o decision ──────────────────────────────────────────────
-    decision_prompt = f"""You are the Event Logistics Assistant for {event_name_str}.
-You are helpful, warm, and conversational — like a smart
-colleague who knows everything about this event.
+    decision_prompt = f"""You are the master Event Logistics Orchestrator for {event_name_str}.
+You are helpful, warm, and highly proactive. You are not just a router; you are a smart coordinator.
 
-You have full knowledge of:
-- {event_name_str} running {start_date} to {end_date} at {venue}
-- {event_count} scheduled events across {day_count} days
-- {participant_count} registered participants across 5 roles
-- All sponsors, rooms, resources, and content plans
+Here is the FULL CONTEXT of your event right now (JSON format):
+{json.dumps(full_context, indent=2, default=str)}
 
+Additional general context:
 {context_block}
 
-You control 3 agents. Fire them when the user's message
-clearly needs it:
-  content_agent   → posts, announcements, social media
-  scheduler_agent → delays, cancellations, conflicts, room changes
-  email_agent     → sending emails to any group (ALWAYS confirm first)
+PROACTIVE REASONING PROTOCOL:
+When a user asks you to take an action (e.g., "delay the keynote by 30 mins"), you must cascade the necessary side-effects automatically.
+Think in this exact order:
+1. What happened? (e.g. Schedule is changing)
+2. Who is affected? (Check participant_schedule_map to see who was attending that event)
+3. What changes? (Fire scheduler_agent to move the time)
+4. Who needs emailing? (Fire email_agent, giving it the exact list of affected participant emails or roles)
+5. What needs announcing? (Fire content_agent to draft a social media post)
 
-For casual messages (greetings, questions, general chat):
-  → Just respond naturally and helpfully
-  → Do NOT mention agents, do NOT say "no agents needed"
-  → Do NOT describe what the user did in third person
-  → Do NOT use system-log language ever
+Never fire the email_agent without providing specific instructions on who to email (using the participant_schedule_map data).
+For casual messages (greetings, questions), just respond naturally and helpfully without firing agents. No robotic language.
 
-For action requests (delay, cancel, email, post):
-  → Confirm what you understood
-  → State which agents you are firing and why
-  → Show results clearly
-  → For emails always ask approval before sending
-
-Tone: friendly, direct, professional. Never robotic.
-Never say "User greeted the system" or similar.
-Never expose internal agent names unless explaining an action.
-
-Return ONLY a JSON object (no markdown fences) with this structure:
+Return ONLY a JSON object evaluating the situation. No text before or after, no markdown backticks.
+Your response must exactly match this structure:
 {{
-  "understood":     "one sentence: what you understood",
-  "display_text":   "Your full, warm, conversational response to the user IN MARKDOWN. This is what the user will see.",
+  "understood":     "A friendly, conversational reply (use this to answer casual questions or confirm actions)",
+  "display_text":   "Detailed markdown response if needed (or leave empty to just use 'understood')",
   "agents_firing":  ["scheduler_agent", "content_agent", "email_agent"],
   "scheduler_payload": {{
     "action": "cascade_delay | mark_cancelled | resource_conflict | no_change",
@@ -1472,11 +1613,12 @@ Return ONLY a JSON object (no markdown fences) with this structure:
   "missing_data": ""
 }}
 
-IMPORTANT RULES for the JSON:
-- Only include agents in agents_firing that actually need to fire.
-- For casual / greeting / question messages, set agents_firing=[] and write a friendly display_text.
-- If data the user needs is missing, set agents_firing=[] and explain in missing_data.
-- display_text should be richly formatted Markdown (use **bold**, bullet lists, etc.)"""
+RULES:
+- For casual messages like "how is your day", "hello", "thanks": return "understood" with a friendly reply, "agents_firing" as [], "needs_approval" as false.
+- For general knowledge questions like "what is the capital of India": answer in the "understood" field, "agents_firing" empty.
+- For event tasks: fill "agents_firing" and "agent_inputs" payloads.
+- ALWAYS return raw JSON only. No markdown, no backticks, no explanation outside the JSON.
+"""
 
     history_msgs = [
         (HumanMessage if m.role == "user" else SystemMessage)(content=m.content)
@@ -1497,10 +1639,12 @@ IMPORTANT RULES for the JSON:
             if raw.startswith("json"): raw = raw[4:]
         decision = json.loads(raw.strip())
     except Exception:
+        # Graceful fallback: show whatever the model outputted as a friendly reply
         decision = {
-            "understood": payload.message,
+            "understood": decision_resp.content.strip()[:500],
             "agents_firing": [],
-            "missing_data": "Could not parse orchestrator decision.",
+            "missing_data": "",
+            "needs_approval": False
         }
 
     understood    = decision.get("understood", payload.message)
@@ -1560,12 +1704,39 @@ IMPORTANT RULES for the JSON:
                                 except Exception:
                                     pass
                             changes.append(f"{e['name']}: now {e.get('start_time','')}–{e.get('end_time','')}")
-                    # Persist updated schedule
-                    ev["schedule"] = schedule
-                    eid = getattr(app.state, "active_event_id", None)
+                    # Persist updated schedule to MongoDB
+                    db = get_db()
+                    eid = ev.get("event_id")
                     if eid:
-                        _save_event_file(eid, ev)
-                        app.state.active_event = ev
+                        await db.events.update_one(
+                            {"event_id": eid},
+                            {"$set": {"schedule": schedule}}
+                        )
+                        # Refresh app.state
+                        app.state.active_event = await _db_get_active_event() or ev
+                    
+                    # ── Proactive: Draft Reschedule Notifications ──────────────────────
+                    # Identify all affected emails for the target event
+                    affected_emails = set()
+                    for em in target.get("assigned_emails", []):
+                        affected_emails.add(em.strip().lower())
+                    # And anyone registered
+                    target_id = target.get("id", "")
+                    for p in pax:
+                        if isinstance(p, dict) and target_id in p.get("registered_events", []):
+                            affected_emails.add(p.get("email", "").strip().lower())
+                            
+                    # Fallback if no specific assignments: notify everyone (demo mode)
+                    if not affected_emails:
+                        affected_emails = {p.get("email").strip().lower() for p in pax if isinstance(p, dict) and p.get("email")}
+                        
+                    if affected_emails:
+                        from agents import email_agent
+                        instr = f"URGENT: Your event '{target.get('name')}' has been delayed by {delay_mins} minutes. It will now take place in {target_room_str}. Sorry for the inconvenience."
+                        notif_res = email_agent.run_email_agent(list(affected_emails), pax_map, event_name_str, instr)
+                        email_drafts.extend(notif_res.get("emails", []))
+                    # ───────────────────────────────────────────────────────────────────
+
                     results["scheduler"] = {
                         "summary": f"Cascaded {len(changes)} events in {target_room_str} by {delay_mins} min.",
                         "changes": changes,
@@ -1575,15 +1746,18 @@ IMPORTANT RULES for the JSON:
                     results["scheduler"] = {"summary": f"Identified delay but couldn't find target event in schedule.", "changes": [], "error": None}
             elif action == "mark_cancelled":
                 target_name = sp.get("event_name", "")
-                for e in schedule:
-                    if target_name.lower() in e.get("name","").lower():
-                        e["status"] = "cancelled"
-                        break
-                eid = getattr(app.state, "active_event_id", None)
+                db = get_db()
+                eid = ev.get("event_id")
                 if eid:
-                    ev["schedule"] = schedule
-                    _save_event_file(eid, ev)
-                    app.state.active_event = ev
+                    for e in schedule:
+                        if target_name.lower() in e.get("name","").lower():
+                            e["status"] = "cancelled"
+                            break
+                    await db.events.update_one(
+                        {"event_id": eid},
+                        {"$set": {"schedule": schedule}}
+                    )
+                    app.state.active_event = await _db_get_active_event() or ev
                 results["scheduler"] = {"summary": f"Marked '{target_name}' as cancelled.", "changes": [], "error": None}
             else:
                 results["scheduler"] = {"summary": "Schedule reviewed — no changes needed.", "changes": [], "error": None}
@@ -1621,40 +1795,36 @@ Write concise, engaging posts for a {ctype} announcement. Return JSON:
     # Email agent
     if "email_agent" in agents_firing:
         try:
+            from agents import email_agent
             ep = decision.get("email_payload", {})
             filter_role = ep.get("filter_role", "all")
-            filter_event = ep.get("filter_event_id", "")
-            subject = ep.get("subject", f"Update from {ev.get('event_name','')}")
             body_instr = ep.get("body_instruction", payload.message)
 
-            # Filter participants
-            filtered = pax if filter_role == "all" else [p for p in pax if p.get("role","") == filter_role]
-            if filter_event:
-                filtered = [p for p in filtered if filter_event in p.get("registered_events", [])]
+            # Determine target emails
+            if filter_role == "all" or not filter_role:
+                target_emails = ["all"]
+            else:
+                target_emails = [p.get("email", "").strip().lower() for p in pax if isinstance(p, dict) and p.get("role", "").lower() == filter_role.lower() and p.get("email")]
 
-            # Draft personalised emails
-            email_llm = ChatOpenAI(model="gpt-4o", temperature=0.4)
-            drafts = []
-            for person in filtered[:20]:  # cap at 20 for safety
-                body_resp = email_llm.invoke([
-                    SystemMessage(content=f"Write a friendly, concise event update email for {person.get('name','')} ({person.get('role','participant')}) at {ev.get('event_name','')}. Keep under 150 words."),
-                    HumanMessage(content=body_instr),
-                ])
-                drafts.append({
-                    "name":    person.get("name", "Participant"),
-                    "email":   person.get("email", ""),
-                    "role":    person.get("role", ""),
-                    "subject": subject,
-                    "body":    body_resp.content.strip(),
-                })
-            email_drafts = drafts
+            # Run the new map-aware email agent
+            email_res = email_agent.run_email_agent(target_emails, pax_map, event_name_str, body_instr)
+            drafts = email_res.get("emails", [])
+            email_drafts.extend(drafts)
+            
             preview = [{"name": d["name"], "email": d["email"], "subject": d["subject"], "body": d["body"][:200]} for d in drafts[:3]]
+            
+            summary_text = f"Drafted {len(drafts)} personalised emails."
+            if filter_role != "all":
+                summary_text += f" (Filtered by role: {filter_role})"
+                
             results["email"] = {
-                "summary": f"Drafted {len(drafts)} personalised emails for {filter_role}s.",
+                "summary": summary_text,
                 "preview": preview,
                 "error": None,
             }
         except Exception as exc:
+            import traceback as tb
+            print("EMAIL ERROR:", tb.format_exc())
             results["email"] = {"summary": "", "preview": [], "error": str(exc)}
 
     # ── Build display message ────────────────────────────────────────────────
@@ -1690,6 +1860,86 @@ Write concise, engaging posts for a {ctype} announcement. Return JSON:
             lines.append(understood)
         display_message = "\n".join(lines)
 
+    # ── Save outputs to MongoDB ──────────────────────────────────────────────
+    run_id = str(uuid.uuid4())
+    db = get_db()
+    active_eid = ev.get("event_id")
+    now = datetime.now(timezone.utc)
+
+    if active_eid:
+        # Save user message to chat_history
+        await db.events.update_one(
+            {"event_id": active_eid},
+            {"$push": {"outputs.chat_history": {
+                "role": "user",
+                "content": payload.message,
+                "timestamp": now.isoformat(),
+            }}}
+        )
+
+        # Save assistant message to chat_history
+        await db.events.update_one(
+            {"event_id": active_eid},
+            {"$push": {"outputs.chat_history": {
+                "role": "assistant",
+                "content": display_message,
+                "timestamp": now.isoformat(),
+                "agents_fired": agents_firing,
+                "run_id": run_id,
+            }}}
+        )
+
+        # Save generated posts
+        if results.get("content") and results["content"].get("posts"):
+            await db.events.update_one(
+                {"event_id": active_eid},
+                {"$push": {"outputs.generated_posts": {
+                    "run_id": run_id,
+                    "triggered_by": payload.message,
+                    "timestamp": now.isoformat(),
+                    "posts": results["content"]["posts"],
+                    "approved": False,
+                }}}
+            )
+
+        # Save schedule changes
+        if results.get("scheduler") and results["scheduler"].get("changes"):
+            await db.events.update_one(
+                {"event_id": active_eid},
+                {"$push": {"outputs.schedule_changes": {
+                    "run_id": run_id,
+                    "trigger": payload.message,
+                    "timestamp": now.isoformat(),
+                    "changes": results["scheduler"]["changes"],
+                }}}
+            )
+
+        # Save email drafts
+        if email_drafts:
+            await db.events.update_one(
+                {"event_id": active_eid},
+                {"$push": {"outputs.email_drafts": {
+                    "run_id": run_id,
+                    "trigger": payload.message,
+                    "timestamp": now.isoformat(),
+                    "recipients": [{"name": d.get("name"), "email": d.get("email")} for d in email_drafts],
+                    "subject": email_drafts[0].get("subject", "") if email_drafts else "",
+                    "drafts": email_drafts,
+                    "approved": False,
+                    "sent": False,
+                }}}
+            )
+
+        # Audit log in agent_runs collection
+        await db.agent_runs.insert_one({
+            "run_id": run_id,
+            "event_id": active_eid,
+            "trigger": payload.message,
+            "agents_fired": agents_firing,
+            "timestamp": now.isoformat(),
+            "status": "success",
+        })
+
     return {
         "display_message":  display_message,
         "understood":       understood,
@@ -1698,6 +1948,7 @@ Write concise, engaging posts for a {ctype} announcement. Return JSON:
         "email_drafts":     email_drafts,
         "needs_approval":   decision.get("needs_approval", bool(email_drafts)),
         "approval_message": decision.get("approval_message", f"Send {len(email_drafts)} emails?"),
+        "run_id":           run_id,
     }
 
 
@@ -1732,6 +1983,86 @@ async def swarm_approve(payload: ApproveRequest):
             failed.append({"email": draft.get("email"), "error": str(exc)})
 
     return {"status": "done", "sent": sent, "failed": failed}
+
+
+# ════════════════════════════════════════════════════════════════
+# OUTPUT HISTORY ROUTES  —  read saved outputs from MongoDB
+# ════════════════════════════════════════════════════════════════
+
+@app.get("/api/outputs/posts")
+async def get_output_posts():
+    """Return all generated posts for the active event, newest first."""
+    ev = await _db_get_active_event()
+    if not ev:
+        return {"posts": []}
+    posts = ev.get("outputs", {}).get("generated_posts", [])
+    posts.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+    return {"posts": posts}
+
+
+@app.get("/api/outputs/schedule-changes")
+async def get_output_schedule_changes():
+    """Return all schedule changes for the active event, newest first."""
+    ev = await _db_get_active_event()
+    if not ev:
+        return {"changes": []}
+    changes = ev.get("outputs", {}).get("schedule_changes", [])
+    changes.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+    return {"changes": changes}
+
+
+@app.get("/api/outputs/email-drafts")
+async def get_output_email_drafts(sent: Optional[str] = None):
+    """Return email drafts for the active event. ?sent=true or ?sent=false to filter."""
+    ev = await _db_get_active_event()
+    if not ev:
+        return {"drafts": []}
+    drafts = ev.get("outputs", {}).get("email_drafts", [])
+    if sent is not None:
+        want_sent = sent.lower() == "true"
+        drafts = [d for d in drafts if d.get("sent", False) == want_sent]
+    drafts.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+    return {"drafts": drafts}
+
+
+@app.get("/api/outputs/chat-history")
+async def get_output_chat_history():
+    """Return chat history for the active event, oldest first."""
+    ev = await _db_get_active_event()
+    if not ev:
+        return {"history": []}
+    history = ev.get("outputs", {}).get("chat_history", [])
+    history.sort(key=lambda x: x.get("timestamp", ""))
+    return {"history": history}
+
+
+@app.get("/api/outputs/runs")
+async def get_output_runs():
+    """Return last 20 agent runs from the agent_runs collection."""
+    db = get_db()
+    ev = await _db_get_active_event()
+    if not ev:
+        return {"runs": []}
+    eid = ev.get("event_id")
+    runs = []
+    async for doc in db.agent_runs.find({"event_id": eid}).sort("timestamp", -1).limit(20):
+        runs.append(serialize_doc(doc))
+    return {"runs": runs}
+
+
+@app.post("/api/swarm/approve-post")
+async def approve_post(payload: dict):
+    """Mark a generated post as approved by run_id."""
+    run_id = payload.get("run_id")
+    if not run_id:
+        raise HTTPException(status_code=400, detail="run_id is required")
+    db = get_db()
+    result = await db.events.update_one(
+        {"is_active": True, "outputs.generated_posts.run_id": run_id},
+        {"$set": {"outputs.generated_posts.$[elem].approved": True}},
+        array_filters=[{"elem.run_id": run_id}]
+    )
+    return {"status": "ok", "matched": result.matched_count, "modified": result.modified_count}
 
 
 # ════════════════════════════════════════════════════════════════

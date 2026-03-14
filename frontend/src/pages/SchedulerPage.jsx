@@ -227,6 +227,7 @@ export default function SchedulerPage() {
       <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.5rem' }}>
         <button style={activeTab === 'plan' ? tabActiveStyle : tabInactive} onClick={() => setActiveTab('plan')}>📋 Plan Schedule</button>
         <button style={activeTab === 'live' ? tabCyanActive : tabInactive} onClick={() => setActiveTab('live')}>📡 Live Tracking</button>
+        <button style={activeTab === 'history' ? tabCyanActive : tabInactive} onClick={() => setActiveTab('history')}>📜 History</button>
       </div>
 
       {/* ══ TAB 1 — Plan ══════════════════════════════════════════════════════ */}
@@ -367,6 +368,38 @@ export default function SchedulerPage() {
           </div>
         </div>
       )}
+
+      {/* ══ TAB 3 — History ═══════════════════════════════════════════════════ */}
+      {activeTab === 'history' && <ScheduleHistoryPanel />}
+    </div>
+  )
+}
+
+function ScheduleHistoryPanel() {
+  const [changes, setChanges] = useState([])
+  const [loading, setLoading]   = useState(true)
+  useEffect(() => {
+    api.get('/api/outputs/schedule-changes')
+      .then(r => setChanges(r.data.changes || []))
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+  if (loading) return <div className="output-terminal" style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>Loading history…</div>
+  if (!changes.length) return <div className="output-terminal" style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>No schedule changes yet. Use the Swarm Chat to report delays or cancellations.</div>
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {changes.map((c, i) => (
+        <div key={i} className="history-card">
+          <div className="history-meta">
+            {new Date(c.timestamp).toLocaleString()} — <em>{c.trigger?.slice(0, 80)}</em>
+          </div>
+          <div className="history-body">
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {(c.changes || []).map((ch, j) => <li key={j}>{ch}</li>)}
+            </ul>
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

@@ -1509,3 +1509,50 @@ p.page-subtitle {
 }
 .chat-send-btn:hover:not(:disabled) { transform: scale(1.05); opacity: 0.9; }
 .chat-send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ── History Cards ────────────────────────────── */
+.history-card {
+  border-left: 3px solid var(--border);
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  background: var(--bg-input);
+  border-radius: 0 10px 10px 0;
+}
+.history-card.approved { border-left-color: var(--green); }
+.history-card.pending  { border-left-color: var(--cyan); }
+.history-card .history-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.history-card .history-body {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+/* ── Tab Row ──────────────────────────────────── */
+.tab-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+.tab-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 14px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.2s;
+}
+.tab-btn:hover { color: var(--text-primary); background: var(--bg-input); }
+.tab-btn.active {
+  color: var(--cyan);
+  background: rgba(0, 245, 212, 0.08);
+  border-bottom: 2px solid var(--cyan);
+}

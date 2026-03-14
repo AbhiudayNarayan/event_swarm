@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { api } from '../shared'
 import { toast } from 'react-hot-toast'
 import { useEventConfig } from '../EventContext'
+import ReactMarkdown from 'react-markdown'
 
 // ── Role badge color map ──────────────────────────────────────────────────────
 const ROLE_BADGE = {
@@ -122,8 +123,8 @@ function AddParticipantForm({ onAdd, onClose }) {
 export default function EmailPage() {
   const { activeEvent, eventName } = useEventConfig()
   const [participants, setParticipants] = useState([])
-  
   const [showAddForm, setShowAddForm] = useState(false)
+  const [activeTab, setActiveTab] = useState('compose')
   const [template, setTemplate] = useState(
     "Hi {name},\n\nWe're excited to have you at Neurathon '26 as a {role}. Your team {team_name} has been registered.\n\nLooking forward to seeing you!\n\nBest regards,\nThe Organizing Team"
   )
@@ -195,6 +196,13 @@ export default function EmailPage() {
         {eventName && <div style={{ marginTop: '12px', display: 'inline-block', background: 'rgba(74,144,255,0.1)', color: 'var(--blue)', padding: '4px 12px', borderRadius: '4px', fontSize: '13px', fontWeight: '600' }}>Active Data Source: {eventName}</div>}
       </div>
 
+      <div className="tab-row">
+        <button className={`tab-btn ${activeTab === 'compose' ? 'active' : ''}`} onClick={() => setActiveTab('compose')}>Compose</button>
+        <button className={`tab-btn ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>History</button>
+      </div>
+
+      {activeTab === 'compose' ? (
+      <>
       <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'flex-start' }}>
         {/* LEFT — Participant list */}
         <div className="agent-card" style={{ flex: 1 }}>
@@ -264,7 +272,7 @@ export default function EmailPage() {
             </>
           )}
         </div>
-      </div>
+    </div>
 
       {/* ══ Approval Modal ══ */}
       {showModal && result && (
@@ -290,6 +298,40 @@ export default function EmailPage() {
           </div>
         </div>
       )}
+      </>) : (
+        <EmailHistoryPanel />
+      )}
+    </div>
+  )
+}
+
+function EmailHistoryPanel() {
+  const [drafts, setDrafts] = useState([])
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    api.get('/api/outputs/email-drafts')
+      .then(r => setDrafts(r.data.drafts || []))
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+  if (loading) return <div className="output-terminal" style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>Loading history…</div>
+  if (!drafts.length) return <div className="output-terminal" style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>No email drafts yet. Use the Swarm Chat to draft emails.</div>
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {drafts.map((d, i) => (
+        <div key={i} className={`history-card ${d.sent ? 'approved' : 'pending'}`}>
+          <div className="history-meta">
+            {new Date(d.timestamp).toLocaleString()} — <em>{d.trigger?.slice(0, 60)}</em>
+            <span className="badge" style={{ marginLeft: 8, fontSize: 10, background: d.sent ? 'var(--green)' : 'var(--cyan)', color: '#000' }}>
+              {d.sent ? '✓ Sent' : 'Pending'}
+            </span>
+          </div>
+          <div className="history-body">
+            <p><strong>Subject:</strong> {d.subject}</p>
+            <p><strong>Recipients ({d.recipients?.length || 0}):</strong> {(d.recipients || []).map(r => r.name).join(', ')}</p>
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

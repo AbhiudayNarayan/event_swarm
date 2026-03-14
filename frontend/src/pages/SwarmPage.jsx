@@ -60,13 +60,28 @@ export default function SwarmPage() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, thinking])
 
+  // ── Load persisted chat history from MongoDB on mount ────────────────────
+  useEffect(() => {
+    api.get('/api/outputs/chat-history')
+      .then(r => {
+        const history = r.data.history || []
+        if (history.length > 0) {
+          const loaded = history.map((h, i) => ({
+            id: i,
+            role: h.role,
+            text: h.content,
+          }))
+          setMessages(loaded)
+        }
+      })
+      .catch(() => {})  // silently ignore if backend not yet up
+  }, [])
+
   // ── Fetch context status on mount ────────────────────────────────────────
   useEffect(() => {
-    // Use a well-known fixed key so SetupPage and SwarmPage always agree
     api.get('/api/setup/context/status', { params: { event_name: eventName } })
       .then(r => setCtxStatus(r.data))
       .catch(() => {
-        // If backend not yet up, fall back to localStorage flag
         setCtxStatus({ loaded: getContextLoaded(), events_count: '?', participants_count: '?' })
       })
   }, [eventName])
