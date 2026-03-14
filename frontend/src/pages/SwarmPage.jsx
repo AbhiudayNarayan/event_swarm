@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { toast } from 'react-hot-toast'
 import { api } from '../shared'
+import ReactMarkdown from 'react-markdown'
 
 // ── Constants ───────────────────────────────────────────────────────────────
 const STARTERS = [
@@ -309,7 +310,7 @@ function BotBubble({ msg, expanded, onToggleExpand, onApprove }) {
 
         {/* Display message */}
         <div style={{ fontSize: 14, color: 'var(--text-primary)', lineHeight: '1.6' }}>
-          {text}
+          <ReactMarkdown>{text}</ReactMarkdown>
         </div>
 
         {/* Agent activity cards */}

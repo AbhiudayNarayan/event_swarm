@@ -1400,15 +1400,55 @@ async def swarm_chat(payload: ChatRequest):
     sponsors   = ev.get("sponsors", [])
     email_tmpl = ev.get("email_template", "Hi {name}, here is an update from {event_name}.")
 
+    event_name_str = ev.get("event_name", "your event")
+    event_count = len(schedule)
+    participant_count = len(pax)
+    day_set = set(e.get("day", 1) for e in schedule) if schedule else {1}
+    day_count = len(day_set)
+    start_date = ev.get("start_date", "TBD")
+    end_date = ev.get("end_date", start_date)
+    venue = ev.get("venue", "TBD")
+
     # ── Step 1: GPT-4o decision ──────────────────────────────────────────────
-    decision_prompt = f"""You are the orchestrator for an event management AI swarm.
+    decision_prompt = f"""You are the Event Logistics Assistant for {event_name_str}.
+You are helpful, warm, and conversational — like a smart
+colleague who knows everything about this event.
+
+You have full knowledge of:
+- {event_name_str} running {start_date} to {end_date} at {venue}
+- {event_count} scheduled events across {day_count} days
+- {participant_count} registered participants across 5 roles
+- All sponsors, rooms, resources, and content plans
 
 {context_block}
 
-Based on the user message below, return ONLY a JSON object (no markdown) with this structure:
+You control 3 agents. Fire them when the user's message
+clearly needs it:
+  content_agent   → posts, announcements, social media
+  scheduler_agent → delays, cancellations, conflicts, room changes
+  email_agent     → sending emails to any group (ALWAYS confirm first)
+
+For casual messages (greetings, questions, general chat):
+  → Just respond naturally and helpfully
+  → Do NOT mention agents, do NOT say "no agents needed"
+  → Do NOT describe what the user did in third person
+  → Do NOT use system-log language ever
+
+For action requests (delay, cancel, email, post):
+  → Confirm what you understood
+  → State which agents you are firing and why
+  → Show results clearly
+  → For emails always ask approval before sending
+
+Tone: friendly, direct, professional. Never robotic.
+Never say "User greeted the system" or similar.
+Never expose internal agent names unless explaining an action.
+
+Return ONLY a JSON object (no markdown fences) with this structure:
 {{
   "understood":     "one sentence: what you understood",
-  "agents_firing":  ["scheduler_agent", "content_agent", "email_agent"],  // subset only
+  "display_text":   "Your full, warm, conversational response to the user IN MARKDOWN. This is what the user will see.",
+  "agents_firing":  ["scheduler_agent", "content_agent", "email_agent"],
   "scheduler_payload": {{
     "action": "cascade_delay | mark_cancelled | resource_conflict | no_change",
     "event_id": "...",
@@ -1429,11 +1469,14 @@ Based on the user message below, return ONLY a JSON object (no markdown) with th
   }},
   "needs_approval": true,
   "approval_message": "Confirm: about to email X people...",
-  "missing_data": ""  // non-empty if the request needs data not yet loaded
+  "missing_data": ""
 }}
 
-Only include agents that actually need to fire for this request.
-If data the user needs (sponsors, schedule, rooms etc.) is missing, set agents_firing=[] and explain in missing_data."""
+IMPORTANT RULES for the JSON:
+- Only include agents in agents_firing that actually need to fire.
+- For casual / greeting / question messages, set agents_firing=[] and write a friendly display_text.
+- If data the user needs is missing, set agents_firing=[] and explain in missing_data.
+- display_text should be richly formatted Markdown (use **bold**, bullet lists, etc.)"""
 
     history_msgs = [
         (HumanMessage if m.role == "user" else SystemMessage)(content=m.content)
@@ -1615,20 +1658,37 @@ Write concise, engaging posts for a {ctype} announcement. Return JSON:
             results["email"] = {"summary": "", "preview": [], "error": str(exc)}
 
     # ── Build display message ────────────────────────────────────────────────
-    lines = [f"**{understood}**\n"]
-    if results.get("scheduler"):
-        r = results["scheduler"]
-        lines.append(f"📅 **Scheduler**: {r.get('summary','')}")
-        if r.get("changes"):
-            lines.extend([f"  — {c}" for c in r["changes"][:6]])
-    if results.get("content"):
-        lines.append(f"🎨 **Content**: {results['content'].get('summary','')}")
-    if results.get("email"):
-        lines.append(f"📧 **Email**: {results['email'].get('summary','')}")
-    if not agents_firing:
-        lines.append("No agents needed for this request — or more context is required.")
+    # Prefer GPT-4o's own display_text for natural, warm responses
+    display_text_from_gpt = decision.get("display_text", "")
 
-    display_message = "\n".join(lines)
+    if display_text_from_gpt:
+        # GPT already wrote a great response — use it, but append agent summaries if any fired
+        extra = []
+        if results.get("scheduler"):
+            r = results["scheduler"]
+            extra.append(f"\n📅 **Scheduler**: {r.get('summary','')}")
+            if r.get("changes"):
+                extra.extend([f"  - {c}" for c in r["changes"][:6]])
+        if results.get("content"):
+            extra.append(f"\n🎨 **Content**: {results['content'].get('summary','')}")
+        if results.get("email"):
+            extra.append(f"\n📧 **Email**: {results['email'].get('summary','')}")
+        display_message = display_text_from_gpt + ("\n" + "\n".join(extra) if extra else "")
+    else:
+        # Fallback: build from results
+        lines = []
+        if results.get("scheduler"):
+            r = results["scheduler"]
+            lines.append(f"📅 **Scheduler**: {r.get('summary','')}")
+            if r.get("changes"):
+                lines.extend([f"  - {c}" for c in r["changes"][:6]])
+        if results.get("content"):
+            lines.append(f"🎨 **Content**: {results['content'].get('summary','')}")
+        if results.get("email"):
+            lines.append(f"📧 **Email**: {results['email'].get('summary','')}")
+        if not lines:
+            lines.append(understood)
+        display_message = "\n".join(lines)
 
     return {
         "display_message":  display_message,

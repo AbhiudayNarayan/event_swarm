@@ -1365,6 +1365,16 @@ p.page-subtitle {
   gap: 10px;
 }
 
+/* Markdown inside bot bubbles */
+.chat-bubble.bot p  { margin: 0 0 8px; }
+.chat-bubble.bot p:last-child { margin-bottom: 0; }
+.chat-bubble.bot strong { font-weight: 600; color: var(--text-primary); }
+.chat-bubble.bot ul { margin: 6px 0 6px 16px; padding: 0; }
+.chat-bubble.bot ol { margin: 6px 0 6px 16px; padding: 0; }
+.chat-bubble.bot li { margin-bottom: 4px; font-size: 13px; }
+.chat-bubble.bot code { background: var(--bg-input); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+.chat-bubble.bot h1, .chat-bubble.bot h2, .chat-bubble.bot h3 { margin: 4px 0 6px; font-size: 14px; }
+
 /* "Understood" line */
 .chat-understood {
   font-size: 13px;
