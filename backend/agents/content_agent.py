@@ -50,7 +50,13 @@ def _parse_json_response(text: str) -> Dict[str, Any]:
         raise
 
 
-def run_content_agent(event_name: str, raw_text: str, target_audience: str) -> Dict[str, Any]:
+def run_content_agent(
+    event_name: str, 
+    raw_text: str, 
+    target_audience: str,
+    image_prompt: str = None,
+    image_style: str = "digital art"
+) -> Dict[str, Any]:
     """
     Generate platform-specific social content for an event.
     """
@@ -114,12 +120,23 @@ def run_content_agent(event_name: str, raw_text: str, target_audience: str) -> D
             {"has_twitter": bool(parsed.get("twitter")), "has_linkedin": bool(parsed.get("linkedin"))},
         )
 
+        if image_prompt:
+            import re
+            from urllib.parse import quote
+            clean_prompt = re.sub(r"[^a-zA-Z0-9 ]", "", image_prompt)[:80]
+            full_prompt = f"{event_name} {clean_prompt} {image_style} professional high quality"
+            encoded_prompt = quote(full_prompt.strip())
+            image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true&seed=42"
+        else:
+            image_url = None
+
         return {
             "twitter": parsed.get("twitter", ""),
             "linkedin": parsed.get("linkedin", ""),
             "instagram": parsed.get("instagram", ""),
             "posting_schedule": parsed.get("posting_schedule", ""),
             "status": "success",
+            "image_url": image_url
         }
     except Exception as e:
         _debug_log(

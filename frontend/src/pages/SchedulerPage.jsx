@@ -163,21 +163,33 @@ function AddEventForm({ onAdd, onClose }) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function SchedulerPage() {
-  const { activeEvent, eventName } = useEventConfig()
-  const [activeTab, setActiveTab] = useState('plan')
-  
+  const { activeEvent, eventName, schedulerState, setSchedulerState } = useEventConfig()
+
   const [events, setEvents] = useState([])
   const [showAddForm, setShowAddForm] = useState(false)
   const [roomConflictModal, setRoomConflictModal] = useState(null)
-
-  // Delay tab state
   const [delayModal, setDelayModal]   = useState(null)
   const [delayMinutes, setDelayMinutes] = useState(0)
-  const [delayResult, setDelayResult] = useState(null)
   const [delayLoading, setDelayLoading] = useState(false)
-  const [submittedDelays, setSubmittedDelays] = useState([])
-  const [cancelledIds, setCancelledIds] = useState([])
 
+  // Convenience accessors into schedulerState
+  const activeTab      = schedulerState.activeTab
+  const delayResult    = schedulerState.delayResult
+  const submittedDelays = schedulerState.submittedDelays
+  const cancelledIds   = schedulerState.cancelledIds
+
+  const setActiveTab = (tab) => setSchedulerState(prev => ({ ...prev, activeTab: tab }))
+  const setDelayResult = (val) => setSchedulerState(prev => ({ ...prev, delayResult: val }))
+  const setSubmittedDelays = (updater) => setSchedulerState(prev => ({
+    ...prev,
+    submittedDelays: typeof updater === 'function' ? updater(prev.submittedDelays) : updater
+  }))
+  const setCancelledIds = (updater) => setSchedulerState(prev => ({
+    ...prev,
+    cancelledIds: typeof updater === 'function' ? updater(prev.cancelledIds) : updater
+  }))
+
+  // Load events from active event on context change
   useEffect(() => {
     if (activeEvent?.schedule && Array.isArray(activeEvent.schedule)) {
       setEvents(activeEvent.schedule)
@@ -185,6 +197,17 @@ export default function SchedulerPage() {
       setEvents([])
     }
   }, [activeEvent])
+
+  // Fix 4 — mount: restore changes history if context empty
+  useEffect(() => {
+    if (schedulerState.changes.length === 0) {
+      api.get('/api/outputs/schedule-changes').then(res => {
+        if (res.data?.changes?.length > 0) {
+          setSchedulerState(prev => ({ ...prev, changes: res.data.changes }))
+        }
+      }).catch(() => {})
+    }
+  }, [])
 
   // ── Delay handler ────────────────────────────────────────────────────────
   const handleReportDelay = async () => {
@@ -370,20 +393,27 @@ export default function SchedulerPage() {
       )}
 
       {/* ══ TAB 3 — History ═══════════════════════════════════════════════════ */}
-      {activeTab === 'history' && <ScheduleHistoryPanel />}
+      {activeTab === 'history' && <ScheduleHistoryPanel schedulerState={schedulerState} setSchedulerState={setSchedulerState} />}
     </div>
   )
 }
 
-function ScheduleHistoryPanel() {
-  const [changes, setChanges] = useState([])
-  const [loading, setLoading]   = useState(true)
+function ScheduleHistoryPanel({ schedulerState, setSchedulerState }) {
+  const [loading, setLoading] = useState(schedulerState.changes.length === 0)
+
   useEffect(() => {
+    // Always refresh from the server when the History tab mounts
     api.get('/api/outputs/schedule-changes')
-      .then(r => setChanges(r.data.changes || []))
+      .then(r => {
+        const changes = r.data.changes || []
+        setSchedulerState(prev => ({ ...prev, changes }))
+      })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [])
+
+  const changes = schedulerState.changes
+
   if (loading) return <div className="output-terminal" style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>Loading history…</div>
   if (!changes.length) return <div className="output-terminal" style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>No schedule changes yet. Use the Swarm Chat to report delays or cancellations.</div>
   return (

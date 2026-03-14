@@ -8,6 +8,18 @@ export function EventProvider({ children }) {
   const [eventId, setEventId] = useState(null)
   const [isLoaded, setIsLoaded] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  const [generatedImages, setGeneratedImages] = useState([])
+  const [participants, setParticipants] = useState([])
+  const [schedulerState, setSchedulerState] = useState({
+    report: null,
+    conflicts: [],
+    changes: [],
+    delayResult: null,
+    lastRun: null,
+    activeTab: 'plan',
+    submittedDelays: [],
+    cancelledIds: [],
+  })
 
   const fetchActiveEvent = useCallback(async () => {
     setIsLoading(true)
@@ -57,6 +69,12 @@ export function EventProvider({ children }) {
     targetAudience: activeEvent?.target_audience || '',
     emailTemplate: activeEvent?.email_template || '',
     eventSetupComplete: isLoaded,
+    generatedImages,
+    setGeneratedImages,
+    participants,
+    setParticipants,
+    schedulerState,
+    setSchedulerState,
   }
 
   return <EventContext.Provider value={value}>{children}</EventContext.Provider>

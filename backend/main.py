@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import smtplib
@@ -77,6 +77,47 @@ async def content_endpoint(payload: ContentRequest):
         return result
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/content/generate-image")
+async def generate_image(request: Request):
+    body = await request.json()
+    prompt = body.get("prompt", "")
+    style = body.get("style", "digital art")
+    event_name = body.get("event_name", "")
+    width = body.get("width", 1024)
+    height = body.get("height", 1024)
+    
+    import re
+    clean_prompt = re.sub(r"[^a-zA-Z0-9 ]", "", prompt)[:80]
+    full_prompt = f"{event_name} {clean_prompt} {style} professional high quality"
+    
+    from urllib.parse import quote
+    encoded = quote(full_prompt.strip())
+    image_url = f"https://image.pollinations.ai/prompt/{encoded}?width={width}&height={height}&nologo=true&seed=42"
+    
+    return {
+        "image_url": image_url,
+        "prompt_used": full_prompt,
+        "style": style
+    }
+
+
+@app.post("/api/participants/save")
+async def save_participants(request: Request):
+    body = await request.json()
+    participants = body.get("participants", [])
+    db = get_db()
+    result = await db.events.update_one(
+        {"is_active": True},
+        {"$set": {"participants": participants}}
+    )
+    # Refresh app state
+    updated = await db.events.find_one({"is_active": True})
+    if updated:
+        updated["_id"] = str(updated["_id"])
+        app.state.active_event = updated
+    return {"success": True, "count": len(participants)}
 
 
 UPLOAD_DIR = Path(__file__).parent / "uploads"
@@ -266,6 +307,31 @@ async def schedule_delay_endpoint(payload: ScheduleDelayRequest):
             + (f"Affected: {', '.join(affected_names)}. " if affected_names else "No downstream sessions affected. ")
             + suggestion
         )
+
+        # Persist to MongoDB so swarm context and history can access it
+        from datetime import datetime, timezone
+        change_doc = {
+            "event_name":      payload.delayed_event_name,
+            "delay_minutes":   delay_mins,
+            "new_end_time":    new_end_time,
+            "affected_emails": [],  # populated by email_agent later
+            "changes":         [f"{payload.delayed_event_name} delayed by {delay_mins} min. New end: {new_end_time}"]  +
+                                   [f"Affected: {a['name']} ({a['reason']})" for a in affected_events],
+            "trigger":         f"Manual delay report: {payload.delayed_event_name} +{delay_mins}min",
+            "timestamp":       datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            db = get_db()
+            await db.events.update_one(
+                {"is_active": True},
+                {"$push": {"outputs.schedule_changes": change_doc}}
+            )
+            updated = await db.events.find_one({"is_active": True})
+            if updated:
+                updated["_id"] = str(updated["_id"])
+                app.state.active_event = updated
+        except Exception:
+            pass  # DB write failure should not block the response
 
         return {
             "delayed_event": payload.delayed_event_name,
@@ -1533,9 +1599,22 @@ async def _swarm_chat_inner(payload: ChatRequest):
     
     # Gather recent actions
     outputs = ev.get("outputs", {})
+    raw_schedule_changes = outputs.get("schedule_changes", [])
+    recent_schedule_changes_detail = [
+        {
+            "event_name":      c.get("event_name") or (c.get("trigger", "")[:60] if c.get("trigger") else ""),
+            "delay_minutes":   c.get("delay_minutes"),
+            "new_start_time":  c.get("new_start_time"),
+            "reason":          c.get("reason"),
+            "changed_at":      c.get("timestamp") or c.get("changed_at"),
+            "affected_emails": c.get("affected_emails", []),
+            "changes":         c.get("changes", []),
+        }
+        for c in raw_schedule_changes[-5:]
+    ]
     recent_actions = {
         "recent_emails": outputs.get("email_drafts", [])[-5:],
-        "recent_schedule_changes": outputs.get("schedule_changes", [])[-5:]
+        "recent_schedule_changes": recent_schedule_changes_detail,
     }
 
     event_name_str = ev.get("event_name", "your event")
@@ -1558,7 +1637,8 @@ async def _swarm_chat_inner(payload: ChatRequest):
         "agent_capabilities": {
             "content_agent": "Drafts engaging social media posts, announcements, and summaries.",
             "scheduler_agent": "Modifies the event schedule: delays events, handles cancellations, and resolves resource/room conflicts.",
-            "email_agent": "Drafts highly personalised emails based on the participant_schedule_map. ALWAYS needs raw lists of affected participant emails to function."
+            "email_agent": "Drafts highly personalised emails based on the participant_schedule_map. ALWAYS needs raw lists of affected participant emails to function.",
+            "image_agent": "Generates images based on descriptions."
         }
     }
 
@@ -1589,7 +1669,7 @@ Your response must exactly match this structure:
 {{
   "understood":     "A friendly, conversational reply (use this to answer casual questions or confirm actions)",
   "display_text":   "Detailed markdown response if needed (or leave empty to just use 'understood')",
-  "agents_firing":  ["scheduler_agent", "content_agent", "email_agent"],
+  "agents_firing":  ["scheduler_agent", "content_agent", "email_agent", "image_agent"],
   "scheduler_payload": {{
     "action": "cascade_delay | mark_cancelled | resource_conflict | no_change",
     "event_id": "...",
@@ -1612,6 +1692,15 @@ Your response must exactly match this structure:
   "approval_message": "Confirm: about to email X people...",
   "missing_data": ""
 }}
+
+SCHEDULE CHANGE AWARENESS:
+- recent_actions.recent_schedule_changes contains the last 5 schedule changes made in this session.
+- If the user says "some event got delayed", "inform participants about the delay", "send reschedule notification", or similar:
+  * Check recent_schedule_changes FIRST. If it is not empty, use the MOST RECENT entry automatically.
+  * DO NOT ask the user for event_name or delay_minutes if they are already present in recent_schedule_changes.
+  * Extract affected_emails from the change and pass them directly to email_agent.
+  * Set email body_instruction to reference the specific event name and new time from the change.
+- NEVER ask the user to go to Events Manager if schedule data already exists in recent_schedule_changes or participant_schedule_map.
 
 RULES:
 - For casual messages like "how is your day", "hello", "thanks": return "understood" with a friendly reply, "agents_firing" as [], "needs_approval" as false.
@@ -1652,7 +1741,11 @@ RULES:
     missing_data  = decision.get("missing_data", "")
 
     # ── Missing data early return ────────────────────────────────────────────
-    if missing_data:
+    # Only block if there is ALSO no schedule loaded — don't block when
+    # schedule/participants are already present in the active event.
+    has_schedule = len(schedule) > 0
+    has_participants = len(pax) > 0
+    if missing_data and not has_schedule and not has_participants:
         return {
             "display_message": f"ℹ️ {missing_data}\n\nGo to **Events Manager** to add this data — you can upload a file, paste CSV, or just describe it in plain English.",
             "understood":      understood,
@@ -1664,6 +1757,7 @@ RULES:
     # ── Step 2: Fire agents ──────────────────────────────────────────────────
     results: Dict[str, Any] = {}
     email_drafts: List[Dict] = []
+    final_response_fields: Dict[str, Any] = {}
 
     # Scheduler agent
     if "scheduler_agent" in agents_firing:
@@ -1838,6 +1932,30 @@ Write concise, engaging posts for a {ctype} announcement. Return JSON:
             print("EMAIL ERROR:", tb.format_exc())
             results["email"] = {"summary": "", "preview": [], "error": str(exc)}
 
+    # Image agent
+    if "image_agent" in agents_firing:
+        try:
+            ip = decision.get("image_payload", {})
+            prompt = ip.get("prompt", payload.message)
+            style = ip.get("style", "digital art")
+            width = ip.get("width", 1024)
+            height = ip.get("height", 1024)
+            
+            import re
+            from urllib.parse import quote
+            clean_prompt = re.sub(r"[^a-zA-Z0-9 ]", "", prompt)[:80]
+            full_prompt = f"{event_name_str} {clean_prompt} {style} professional high quality"
+            encoded = quote(full_prompt.strip())
+            image_url = f"https://image.pollinations.ai/prompt/{encoded}?width={width}&height={height}&nologo=true&seed=42"
+            
+            final_response_fields["image_url"] = image_url
+            final_response_fields["image_prompt"] = prompt
+            final_response_fields["image_style"] = style
+            
+            results["image"] = {"summary": f"Generated image for {prompt}", "error": None}
+        except Exception as exc:
+            results["image"] = {"summary": "", "error": str(exc)}
+
     # ── Build display message ────────────────────────────────────────────────
     # Prefer GPT-4o's own display_text for natural, warm responses
     display_text_from_gpt = decision.get("display_text", "")
@@ -1951,7 +2069,7 @@ Write concise, engaging posts for a {ctype} announcement. Return JSON:
             "status": "success",
         })
 
-    return {
+    res = {
         "display_message":  display_message,
         "understood":       understood,
         "agents_fired":     agents_firing,
@@ -1961,6 +2079,8 @@ Write concise, engaging posts for a {ctype} announcement. Return JSON:
         "approval_message": decision.get("approval_message", f"Send {len(email_drafts)} emails?"),
         "run_id":           run_id,
     }
+    res.update(final_response_fields)
+    return res
 
 
 # ════════════════════════════════════════════════════════════════

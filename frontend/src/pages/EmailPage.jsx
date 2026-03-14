@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { api } from '../shared'
 import { toast } from 'react-hot-toast'
 import { useEventConfig } from '../EventContext'
@@ -20,9 +20,10 @@ function ParticipantTable({ participants, setParticipants }) {
   const set = (k, v) => setDraft(p => ({ ...p, [k]: v }))
 
   const saveEdit = () => {
-    setParticipants(prev => prev.map((p, i) => i === editingIdx ? draft : p))
+    const updated = prev => prev.map((p, i) => i === editingIdx ? draft : p)
+    setParticipants(prev => updated(prev))
     setEditingIdx(null)
-    toast.success('Participant updated locally (Save not implemented for demo)')
+    toast.success('Participant updated')
   }
   const deleteRow = (idx) => {
     if (!window.confirm('Remove this participant?')) return
@@ -121,8 +122,8 @@ function AddParticipantForm({ onAdd, onClose }) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function EmailPage() {
-  const { activeEvent, eventName } = useEventConfig()
-  const [participants, setParticipants] = useState([])
+  const { activeEvent, eventName, participants, setParticipants } = useEventConfig()
+  const debounceRef = useRef(null)
   const [showAddForm, setShowAddForm] = useState(false)
   const [activeTab, setActiveTab] = useState('compose')
   const [template, setTemplate] = useState(
@@ -134,12 +135,42 @@ export default function EmailPage() {
   const [approved, setApproved] = useState(false)
   const [sending, setSending] = useState(false)
 
+  // Debounced auto-save participants to MongoDB
+  const saveParticipants = (list) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(async () => {
+      try {
+        await api.post('/api/participants/save', { participants: list })
+        toast.success('Participants saved')
+      } catch {
+        toast.error('Failed to save participants')
+      }
+    }, 500)
+  }
+
+  // Wrap setParticipants to also trigger debounced save
+  const updateParticipants = (updater) => {
+    setParticipants(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater
+      saveParticipants(next)
+      return next
+    })
+  }
+
+  // Mount: restore from active event if context is empty
+  useEffect(() => {
+    if (participants.length === 0) {
+      api.get('/api/events/active').then(res => {
+        const p = res.data?.participants || []
+        if (p.length > 0) setParticipants(p)
+      }).catch(() => {})
+    }
+  }, [])
+
   useEffect(() => {
     if (activeEvent) {
-      if (activeEvent.participants?.length > 0) {
+      if (activeEvent.participants?.length > 0 && participants.length === 0) {
         setParticipants(activeEvent.participants)
-      } else {
-        setParticipants([])
       }
       if (activeEvent.email_template) {
         setTemplate(activeEvent.email_template)
@@ -214,8 +245,8 @@ export default function EmailPage() {
             <div className="empty-state">No participants found. Edit {eventName} in Event Settings to assign participants.</div>
           ) : (
             <>
-              {showAddForm && <AddParticipantForm onAdd={p => setParticipants(prev => [...prev, p])} onClose={() => setShowAddForm(false)} />}
-              <ParticipantTable participants={participants} setParticipants={setParticipants} />
+              {showAddForm && <AddParticipantForm onAdd={p => updateParticipants(prev => [...prev, p])} onClose={() => setShowAddForm(false)} />}
+              <ParticipantTable participants={participants} setParticipants={updateParticipants} />
               {!showAddForm && <button className="add-row-btn" onClick={() => setShowAddForm(true)}>+ Add Participant</button>}
             </>
           )}
