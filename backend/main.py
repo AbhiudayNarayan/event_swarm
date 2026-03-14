@@ -1805,9 +1805,20 @@ Write concise, engaging posts for a {ctype} announcement. Return JSON:
                 target_emails = ["all"]
             else:
                 target_emails = [p.get("email", "").strip().lower() for p in pax if isinstance(p, dict) and p.get("role", "").lower() == filter_role.lower() and p.get("email")]
+                if not target_emails:
+                    target_emails = ["all"]
+
+            # Extract generated content posts if any, to pass as context
+            content_context_to_pass = results.get("content", {}).get("posts", None)
 
             # Run the new map-aware email agent
-            email_res = email_agent.run_email_agent(target_emails, pax_map, event_name_str, body_instr)
+            email_res = email_agent.run_email_agent(
+                target_emails, 
+                pax_map, 
+                event_name_str, 
+                body_instr,
+                content_context=content_context_to_pass
+            )
             drafts = email_res.get("emails", [])
             email_drafts.extend(drafts)
             

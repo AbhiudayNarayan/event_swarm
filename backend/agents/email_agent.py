@@ -117,7 +117,8 @@ def run_email_agent(
     target_emails: list[str],
     participant_map: dict,
     event_name: str,
-    instruction: str
+    instruction: str,
+    content_context: dict = None
 ) -> dict:
     """
     Generates tailored email drafts for specific participants using their schedule.
@@ -171,8 +172,12 @@ Their Schedule:
 
 ANNOUNCEMENT / INSTRUCTION to integrate:
 {instruction}
+"""
 
-Write the email body now:"""
+        if content_context:
+            user_prompt += f"\nAdditional Context (Generated Content):\n{content_context}\nUse this to inform the email body if relevant.\n"
+
+        user_prompt += "\nWrite the email body now:"
 
         try:
             resp = llm.invoke([
