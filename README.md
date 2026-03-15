@@ -1,72 +1,115 @@
-## Event Logistics Swarm
+# EL Swarm — Event Logistics Swarm
 
-Multi-agent FastAPI + React dashboard for orchestrating event logistics: content generation, email preparation, schedule conflict resolution, budgeting, logistics and participant Q&A.
+> A multi-agent AI platform for end-to-end event management.
 
-### Tech Stack
+EL Swarm orchestrates **7 specialized GPT‑4o agents** through a single LangGraph-powered workflow to automate coordination across scheduling, communications, budgeting, logistics, and attendee Q&A. Built for **Neurathon ’26**.
 
-- **Backend**: FastAPI, LangGraph, LangChain (OpenAI GPT `gpt-4o`), Motor (MongoDB), WebSockets
+---
+
+## ✨ Highlights
+
+- **One prompt → full workflow**: trigger the swarm and watch each agent collaborate in sequence.
+- **Real-time dashboard**: React + Tailwind UI with **WebSocket** activity streaming.
+- **Conflict-aware scheduling**: detect & resolve schedule overlaps from JSON input.
+- **Personalized outreach**: generate invite/follow-up emails from participant CSVs.
+- **Social content in minutes**: draft platform-specific posts + a posting plan.
+- **Budget & logistics tracking**: allocations, expenses, vendors, venue notes.
+- **Grounded attendee Q&A**: answers based on the current schedule + generated artifacts.
+
+## 🧠 Agents
+
+| Agent | What it does |
+|------|--------------|
+| **Swarm Orchestrator** | Runs the end‑to‑end multi-agent graph |
+| **Scheduler** | Detects conflicts + proposes resolutions |
+| **Email** | Drafts personalized emails from participant data |
+| **Content / Social** | Generates LinkedIn/Twitter/Instagram content + schedule |
+| **Budget** | Tracks allocations, expenses, and summaries |
+| **Logistics** | Manages vendors, venue, and operational notes |
+| **Participant Q&A** | Answers attendee questions grounded in event context |
+
+## 🧱 Tech Stack
+
+- **Backend**: FastAPI, LangGraph, LangChain, OpenAI (GPT‑4o), Motor (MongoDB), WebSockets
 - **Frontend**: React, Vite, Tailwind CSS
-- **Agents**: Content, Email, Scheduler, Budget, Logistics, Swarm Orchestrator, Participant Q&A
+- **Data**: CSV/JSON sample inputs for quick demos
 
-### Project Structure
+## 📁 Project Structure
 
-- **`backend/`**: FastAPI API, LangGraph swarm orchestration, agents, tools and database layer
-  - `main.py` – FastAPI app and HTTP/WebSocket endpoints
-  - `orchestrator.py` – LangGraph `swarm_app` wiring content → scheduler → email (+ QA node)
-  - `state.py` – `SwarmState` definition
-  - `db.py` – MongoDB connection using Motor + helpers
-  - `agents/` – individual agents (`content_agent.py`, `scheduler_agent.py`, `email_agent.py`, `budget_agent.py`, `logistics_agent.py`, `qa_agent.py`, `registry.py`)
-  - `tools/` – CSV parsing and schedule conflict utilities
-  - `sample_data/` – demo CSV/JSON for participants, sponsors and schedules
-  - `requirements.txt` – Python dependencies for the backend
-- **`frontend/`**: React dashboard UI (Vite + Tailwind)
-  - `src/App.jsx`, `src/main.jsx`, `src/Layout.jsx`, `src/EventContext.jsx`
-  - `src/pages/` – views for Dashboard, Swarm, Content, Scheduler, Budget, Email, Logistics, Q&A, Events, Setup
-  - `src/components/` – reusable agent panels (Content, Email, Scheduler)
+- `backend/`
+  - `main.py` — FastAPI app + HTTP/WebSocket endpoints
+  - `orchestrator.py` — LangGraph `swarm_app` wiring nodes
+  - `state.py` — `SwarmState` definition
+  - `db.py` — MongoDB connection (Motor) + helpers
+  - `agents/` — content, scheduler, email, budget, logistics, qa, registry
+  - `tools/` — schedule conflict + CSV utilities
+  - `sample_data/` — demo participants/schedule/sponsors
+  - `requirements.txt` — backend dependencies
+- `frontend/`
+  - Vite + React + Tailwind dashboard
+  - `src/pages/` — Dashboard, Swarm, Content, Scheduler, Budget, Email, Logistics, Q&A
 
-### Backend Setup (Python)
+---
 
-1. **Create & activate a virtualenv**
-   - `cd backend`
-   - `python -m venv .venv`
-   - Windows: `.\.venv\Scripts\activate`
-2. **Install dependencies**
-   - `pip install -r requirements.txt`
-3. **Environment variables (`backend/.env`)**
-   - `OPENAI_API_KEY=your_openai_key`
-   - `MONGODB_URI=mongodb://localhost:27017` (or your Mongo connection string)
-   - `MONGODB_DB=event_swarm`
-4. **Run the API**
-   - From `backend/`:
-   - `uvicorn main:app --reload --host 0.0.0.0 --port 8000`
+## 🚀 Quickstart
 
-### Frontend Setup (React)
+### 1) Backend (FastAPI)
 
-1. `cd frontend`
-2. Install dependencies: `npm install`
-3. Start dev server: `npm run dev`
-4. Open the printed `http://localhost:5173` (or similar) URL in the browser and ensure API base is `http://localhost:8000`.
+```bash
+cd backend
+python -m venv .venv
+# Windows: .\.venv\Scripts\activate
+# macOS/Linux:
+source .venv/bin/activate
 
-### Using the App (Demo Flow)
+pip install -r requirements.txt
+```
 
-1. **Create/Select Event (Dashboard / Setup)**
-   - Configure basic event metadata from the dashboard/setup pages.
-2. **Scheduler Agent**
-   - Use `backend/sample_data/sample_schedule.json` (or paste your own events JSON) on the Scheduler page to detect and resolve conflicts.
-3. **Content Agent**
-   - On the Content page, provide event name, target audience and a short brief to generate Twitter/LinkedIn/Instagram posts plus posting schedule.
-4. **Email Agent**
-   - Upload or point to participants CSV (e.g. `backend/sample_data/sample_participants.csv`) and generate personalised invitation/follow-up emails.
-5. **Budget Agent**
-   - Define a total budget and allocations, then add expenses; view per-category and overall spending summaries.
-6. **Logistics Agent**
-   - Track venue, vendors and logistics notes for the event.
-7. **Swarm Orchestrator**
-   - Use the Swarm page to trigger the end‑to‑end multi‑agent workflow and watch the activity log stream in real time via WebSocket.
-8. **Q&A Bot**
-   - Ask participant-style questions (e.g. “What time is the keynote?”) and get answers grounded in the current schedule and generated content.
+Create `backend/.env`:
 
-### Notes
+```bash
+OPENAI_API_KEY=your_openai_key
+MONGODB_URI=mongodb://localhost:27017
+MONGODB_DB=event_swarm
+```
 
-- This repo is designed for local demos and hackathon-style experimentation; you should add proper auth, rate‑limiting and production‑grade configs before deploying.
-- API keys and secrets must **never** be committed to git – keep them only in `.env` or your secret manager.
+Run the API:
+
+```bash
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### 2) Frontend (React)
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the printed dev URL (typically `http://localhost:5173`) and ensure the API base is `http://localhost:8000`.
+
+---
+
+## 🧪 Demo Flow (recommended)
+
+1. **Create/Select an Event** (Dashboard / Setup)
+2. **Scheduler**: load `backend/sample_data/sample_schedule.json` to detect/resolve conflicts
+3. **Content**: generate social posts + a posting schedule
+4. **Email**: use `backend/sample_data/sample_participants.csv` for personalized outreach
+5. **Budget**: set allocations + track expenses
+6. **Logistics**: capture vendor/venue notes
+7. **Swarm**: run the full orchestration and watch the live activity log
+8. **Q&A**: ask attendee questions ("What time is the keynote?") grounded in your schedule
+
+---
+
+## 🔐 Notes & Best Practices
+
+- This repository is intended for **local demos/hackathon iteration**.
+- For production: add **auth**, **rate limiting**, validation, and deployment configs.
+- Never commit secrets—keep keys in `.env` or a secret manager.
+
+## 📜 License
+
+No license specified yet. If you plan to open-source this, consider adding a LICENSE file.
