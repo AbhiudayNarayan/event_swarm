@@ -91,7 +91,7 @@ Open the printed dev URL (typically `http://localhost:5173`) and ensure the API 
 
 ---
 
-## 🧪 Demo Flow (recommended)
+## 🧪 Demo Flow
 
 1. **Create/Select an Event** (Dashboard / Setup)
 2. **Scheduler**: load `backend/sample_data/sample_schedule.json` to detect/resolve conflicts
@@ -101,15 +101,3 @@ Open the printed dev URL (typically `http://localhost:5173`) and ensure the API 
 6. **Logistics**: capture vendor/venue notes
 7. **Swarm**: run the full orchestration and watch the live activity log
 8. **Q&A**: ask attendee questions ("What time is the keynote?") grounded in your schedule
-
----
-
-## 🔐 Notes & Best Practices
-
-- This repository is intended for **local demos/hackathon iteration**.
-- For production: add **auth**, **rate limiting**, validation, and deployment configs.
-- Never commit secrets—keep keys in `.env` or a secret manager.
-
-## 📜 License
-
-No license specified yet. If you plan to open-source this, consider adding a LICENSE file.
