@@ -1,203 +1,614 @@
 import os
+from typing import Any, Dict, List, Optional
+
 import pandas as pd
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
-def run(csv_path: str, email_template: str) -> dict:
-    load_dotenv()
-    
-    # 2. Read the CSV using pandas. Handle missing columns gracefully.
+
+# ---------------------------------------------------------
+# Environment Setup
+# ---------------------------------------------------------
+
+load_dotenv()
+
+
+# ---------------------------------------------------------
+# Helper Functions
+# ---------------------------------------------------------
+
+def is_valid_email(email: Any) -> bool:
+    """
+    Basic email validation.
+    Checks that the email contains '@' and a '.' after '@'.
+    """
+    if pd.isna(email):
+        return False
+
+    email = str(email).strip()
+
+    if not email:
+        return False
+
+    if "@" not in email:
+        return False
+
+    domain = email.split("@", 1)[1]
+
+    return "." in domain
+
+
+def clean_value(value: Any, default: str = "") -> str:
+    """
+    Convert a CSV value into a clean string.
+    """
+    if pd.isna(value):
+        return default
+
+    value = str(value).strip()
+
+    return value if value else default
+
+
+def replace_placeholders(
+    template: str,
+    name: str,
+    role: str,
+    team_name: str
+) -> str:
+    """
+    Replace supported placeholders in an email template.
+    """
+
+    return (
+        template
+        .replace("{name}", name)
+        .replace("{role}", role)
+        .replace("{team_name}", team_name)
+    )
+
+
+def create_llm(
+    model: str = "gpt-4o",
+    temperature: float = 0.7
+) -> ChatOpenAI:
+    """
+    Create and return the LangChain OpenAI chat model.
+    """
+
+    return ChatOpenAI(
+        model=model,
+        temperature=temperature
+    )
+
+
+# ---------------------------------------------------------
+# Main Email Segmentation + Personalization Function
+# ---------------------------------------------------------
+
+def run(
+    csv_path: str,
+    email_template: str
+) -> Dict[str, Any]:
+    """
+    Read participant information from a CSV file, segment users
+    by role, generate role-specific email templates using GPT,
+    personalize the templates, and return email previews.
+
+    Expected CSV columns:
+        name
+        email
+        role
+        team_name
+    """
+
+    # -----------------------------------------------------
+    # 1. Load CSV
+    # -----------------------------------------------------
+
     try:
-        df = pd.read_csv(csv_path, on_bad_lines='skip')
-    except Exception as e:
+        df = pd.read_csv(
+            csv_path,
+            on_bad_lines="skip"
+        )
+
+    except Exception as first_error:
+
         try:
-            df = pd.read_csv(csv_path, error_bad_lines=False)
-        except Exception as e2:
-            raise ValueError(f"Failed to read CSV: {str(e)}")
-        
-    required_cols = ['name', 'email', 'role', 'team_name']
-    for col in required_cols:
-        if col not in df.columns:
-            df[col] = ""
-            
-    # 3. Validate each row — skip rows where email doesn't contain "@" followed by a "."
+            # Fallback for older pandas versions
+            df = pd.read_csv(
+                csv_path,
+                error_bad_lines=False
+            )
+
+        except Exception as second_error:
+            raise ValueError(
+                f"Failed to read CSV file: {first_error}"
+            ) from second_error
+
+    # -----------------------------------------------------
+    # 2. Ensure Required Columns Exist
+    # -----------------------------------------------------
+
+    required_columns = [
+        "name",
+        "email",
+        "role",
+        "team_name"
+    ]
+
+    for column in required_columns:
+        if column not in df.columns:
+            df[column] = ""
+
+    # -----------------------------------------------------
+    # 3. Validate Email Addresses
+    # -----------------------------------------------------
+
     valid_rows = []
+
     for _, row in df.iterrows():
-        email = str(row['email']).strip()
-        if "@" in email and "." in email.split("@")[-1]:
+
+        email = clean_value(row["email"])
+
+        if is_valid_email(email):
             valid_rows.append(row)
-            
+
+    # -----------------------------------------------------
+    # 4. Return Empty Result If No Valid Recipients
+    # -----------------------------------------------------
+
     if not valid_rows:
         return {
             "total_recipients": 0,
-            "segments": {"participants": 0, "mentors": 0, "judges": 0},
+            "segments": {
+                "participants": 0,
+                "mentors": 0,
+                "judges": 0
+            },
             "preview": [],
             "status": "ready_to_send"
         }
 
-    # 4. Group rows into three segments by role: participants, mentors, judges
+    # -----------------------------------------------------
+    # 5. Create Role-Based Segments
+    # -----------------------------------------------------
+
     segments = {
         "participant": [],
         "mentor": [],
         "judge": []
     }
-    
+
     for row in valid_rows:
-        role = str(row['role']).strip().lower()
+
+        role = clean_value(
+            row["role"],
+            default="participant"
+        ).lower()
+
         if role in segments:
             segments[role].append(row)
+
         else:
-            # Default to participant if unknown
+            # Unknown roles are treated as participants
             segments["participant"].append(row)
-            
-    # 5. For each segment, call GPT-4o
-    llm = ChatOpenAI(model="gpt-4o", temperature=0.7)
-    system_prompt = "You are an event communications assistant. Rewrite the given email template to be appropriate for the given audience segment at a technical hackathon. Keep it professional, warm, and concise."
-    
-    segment_templates = {}
-    
+
+    # -----------------------------------------------------
+    # 6. Initialize LLM
+    # -----------------------------------------------------
+
+    llm = create_llm(
+        model="gpt-4o",
+        temperature=0.7
+    )
+
+    system_prompt = """
+You are an event communications assistant.
+
+Your task is to rewrite an email template for a specific
+audience segment at a technical hackathon.
+
+Audience segments may include:
+- Participants
+- Mentors
+- Judges
+
+Rules:
+1. Keep the email professional, warm, and concise.
+2. Preserve the important information from the original template.
+3. Adapt the language to the audience.
+4. Do not invent event information.
+5. Preserve placeholders such as:
+   {name}
+   {role}
+   {team_name}
+6. Return only the rewritten email body.
+"""
+
+    # -----------------------------------------------------
+    # 7. Generate Templates for Each Segment
+    # -----------------------------------------------------
+
+    segment_templates: Dict[str, str] = {}
+
     for role_key, rows in segments.items():
+
         if not rows:
             continue
-            
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=f"Audience segment: {role_key}\n\nBase template:\n{email_template}")
-        ]
-        
+
+        user_prompt = f"""
+Audience segment: {role_key}
+
+Base email template:
+{email_template}
+
+Rewrite this template for the specified audience.
+"""
+
         try:
-            response = llm.invoke(messages)
-            segment_templates[role_key] = response.content
-        except Exception as e:
-            # Fallback to the original template if LLM fails
+
+            response = llm.invoke(
+                [
+                    SystemMessage(
+                        content=system_prompt
+                    ),
+                    HumanMessage(
+                        content=user_prompt
+                    )
+                ]
+            )
+
+            segment_templates[role_key] = (
+                response.content.strip()
+            )
+
+        except Exception:
+            # Use original template if LLM fails
             segment_templates[role_key] = email_template
 
-    # 6 & 7. Personalize and build preview list
-    preview = []
-    
+    # -----------------------------------------------------
+    # 8. Personalize Emails
+    # -----------------------------------------------------
+
+    preview: List[Dict[str, Any]] = []
+
     for role_key, rows in segments.items():
+
         if not rows:
             continue
-            
-        base_text = segment_templates[role_key]
-        
+
+        base_template = segment_templates.get(
+            role_key,
+            email_template
+        )
+
         for row in rows:
-            name = str(row['name']).strip() or "Participant"
-            actual_role = str(row['role']).strip() or role_key
-            team_name = str(row['team_name']).strip()
-            if not team_name or str(team_name).lower() == 'nan':
-                team_name = "your team"
-                
-            body = base_text.replace("{name}", name).replace("{role}", actual_role).replace("{team_name}", team_name)
-            
-            preview.append({
-                "name": name,
-                "email": str(row['email']).strip(),
-                "role": actual_role,
-                "team_name": team_name,
-                "subject": f"Important Update for {name} | Neurathon '26",
-                "body": body
-            })
-            
-    # 8. Return dictionary
+
+            name = clean_value(
+                row["name"],
+                default="Participant"
+            )
+
+            actual_role = clean_value(
+                row["role"],
+                default=role_key
+            )
+
+            team_name = clean_value(
+                row["team_name"],
+                default="your team"
+            )
+
+            # Replace placeholders
+            body = replace_placeholders(
+                template=base_template,
+                name=name,
+                role=actual_role,
+                team_name=team_name
+            )
+
+            preview.append(
+                {
+                    "name": name,
+                    "email": clean_value(row["email"]),
+                    "role": actual_role,
+                    "team_name": team_name,
+                    "subject": (
+                        f"Important Update for "
+                        f"{name} | Neurathon '26"
+                    ),
+                    "body": body
+                }
+            )
+
+    # -----------------------------------------------------
+    # 9. Return Final Result
+    # -----------------------------------------------------
+
     return {
         "total_recipients": len(preview),
+
         "segments": {
-            "participants": len(segments["participant"]),
-            "mentors": len(segments["mentor"]),
-            "judges": len(segments["judge"])
+            "participants": len(
+                segments["participant"]
+            ),
+            "mentors": len(
+                segments["mentor"]
+            ),
+            "judges": len(
+                segments["judge"]
+            )
         },
+
         "preview": preview,
+
         "status": "ready_to_send"
     }
 
 
+# =========================================================
+# Personalized Email Agent
+# =========================================================
+
 def run_email_agent(
-    target_emails: list[str],
-    participant_map: dict,
+    target_emails: List[str],
+    participant_map: Dict[str, Dict[str, Any]],
     event_name: str,
     instruction: str,
-    content_context: dict = None
-) -> dict:
+    content_context: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
-    Generates tailored email drafts for specific participants using their schedule.
-    
-    target_emails: List of email strings to draft emails for. If ["all"], does everyone.
-    participant_map: The participant_schedule_map dict built in main.py.
-    instruction: System instruction from GPT-4o (e.g. "Announce keynote delay").
+    Generate personalized email drafts for selected participants.
+
+    Parameters
+    ----------
+    target_emails:
+        List of target email addresses.
+        Use ["all"] to generate emails for everyone.
+
+    participant_map:
+        Dictionary containing participant information
+        and event schedules.
+
+    event_name:
+        Name of the event.
+
+    instruction:
+        Announcement or communication instruction.
+
+    content_context:
+        Optional additional context generated elsewhere.
     """
-    load_dotenv()
-    llm = ChatOpenAI(model="gpt-4o", temperature=0.2)
-    
-    # 1. Filter the map to only target emails
+
+    # -----------------------------------------------------
+    # 1. Initialize LLM
+    # -----------------------------------------------------
+
+    llm = create_llm(
+        model="gpt-4o",
+        temperature=0.2
+    )
+
+    # -----------------------------------------------------
+    # 2. Select Target Participants
+    # -----------------------------------------------------
+
     if target_emails == ["all"]:
+
         targets = participant_map
+
     else:
-        # Normalise emails
-        target_set = {e.strip().lower() for e in target_emails}
-        targets = {k: v for k, v in participant_map.items() if k.strip().lower() in target_set}
-        
+
+        target_set = {
+            email.strip().lower()
+            for email in target_emails
+            if email and email.strip()
+        }
+
+        targets = {
+            email: profile
+            for email, profile in participant_map.items()
+            if email.strip().lower() in target_set
+        }
+
+    # -----------------------------------------------------
+    # 3. Handle No Targets
+    # -----------------------------------------------------
+
     if not targets:
-        return {"drafts_created": 0, "emails": []}
+        return {
+            "drafts_created": 0,
+            "emails": []
+        }
 
-    system_prompt = f"""You are the Communications Director for {event_name}.
-Your job is to write a single, perfectly tailored email body for a specific participant.
-You will be given their profile, their personal event schedule, and the specific ANNOUNCEMENT to make.
+    # -----------------------------------------------------
+    # 4. System Prompt
+    # -----------------------------------------------------
 
-RULES:
+    system_prompt = f"""
+You are the Communications Director for {event_name}.
+
+Your task is to write a personalized email for a specific
+hackathon participant.
+
+You will receive:
+- Participant information
+- Their event schedule
+- An announcement/instruction
+- Optional additional context
+
+Rules:
+
 1. Keep the tone warm, professional, and clear.
-2. If their schedule has events, include a clean bulleted list of their events (time, name, room).
-3. Merge the ANNOUNCEMENT seamlessly into the email.
-4. Return ONLY the raw body text of the email. No subject line. No markdown fences. No preambles.
+2. Personalize the email using the participant's name.
+3. If the participant has scheduled events, include them
+   as a clean bulleted list.
+4. Include the event time, event name, and room when available.
+5. Integrate the announcement naturally into the email.
+6. Do not invent schedule information.
+7. Do not create a subject line.
+8. Do not use Markdown code fences.
+9. Return ONLY the email body.
 """
 
-    drafts = []
-    
-    # 2. Generate an email for each target
+    # -----------------------------------------------------
+    # 5. Generate Drafts
+    # -----------------------------------------------------
+
+    drafts: List[Dict[str, Any]] = []
+
     for email, profile in targets.items():
-        name = profile.get("name", "Participant")
-        role = profile.get("role", "participant")
-        
-        # Build schedule string
-        sched_lines = []
-        for e in profile.get("events", []):
-            sched_lines.append(f"- {e.get('time', '')}: {e.get('name', '')} @ {e.get('room', '')}")
-            
-        schedule_text = "\n".join(sched_lines) if sched_lines else "You have no assigned events yet."
-        
-        user_prompt = f"""Participant: {name} (Role: {role})
-Their Schedule:
+
+        # -------------------------------------------------
+        # Participant Information
+        # -------------------------------------------------
+
+        name = profile.get(
+            "name",
+            "Participant"
+        )
+
+        role = profile.get(
+            "role",
+            "participant"
+        )
+
+        # -------------------------------------------------
+        # Build Schedule
+        # -------------------------------------------------
+
+        events = profile.get(
+            "events",
+            []
+        )
+
+        schedule_lines = []
+
+        for event in events:
+
+            time = event.get(
+                "time",
+                ""
+            )
+
+            event_name_value = event.get(
+                "name",
+                ""
+            )
+
+            room = event.get(
+                "room",
+                ""
+            )
+
+            schedule_lines.append(
+                f"- {time}: "
+                f"{event_name_value} @ {room}"
+            )
+
+        if schedule_lines:
+
+            schedule_text = "\n".join(
+                schedule_lines
+            )
+
+        else:
+
+            schedule_text = (
+                "You have no assigned events yet."
+            )
+
+        # -------------------------------------------------
+        # Build User Prompt
+        # -------------------------------------------------
+
+        user_prompt = f"""
+Participant:
+{name}
+
+Role:
+{role}
+
+Their Event Schedule:
 {schedule_text}
 
-ANNOUNCEMENT / INSTRUCTION to integrate:
+ANNOUNCEMENT / INSTRUCTION:
 {instruction}
 """
 
-        if content_context:
-            user_prompt += f"\nAdditional Context (Generated Content):\n{content_context}\nUse this to inform the email body if relevant.\n"
+        # -------------------------------------------------
+        # Add Optional Context
+        # -------------------------------------------------
 
-        user_prompt += "\nWrite the email body now:"
+        if content_context:
+
+            user_prompt += f"""
+    
+Additional Context:
+{content_context}
+
+Use this additional context only when relevant.
+"""
+
+        user_prompt += """
+
+Write the personalized email body now.
+"""
+
+        # -------------------------------------------------
+        # Call LLM
+        # -------------------------------------------------
 
         try:
-            resp = llm.invoke([
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_prompt)
-            ])
-            body = resp.content.strip()
-        except Exception:
-            body = f"Hi {name},\n\n{instruction}\n\nYour Schedule:\n{schedule_text}\n\nBest,\n{event_name} Team"
 
-        drafts.append({
-            "email": email,
-            "name": name,
-            "subject": f"Update from {event_name}",
-            "body": body,
-            "status": "pending_approval"
-        })
+            response = llm.invoke(
+                [
+                    SystemMessage(
+                        content=system_prompt
+                    ),
+                    HumanMessage(
+                        content=user_prompt
+                    )
+                ]
+            )
+
+            body = response.content.strip()
+
+        except Exception:
+
+            # Fallback email
+            body = (
+                f"Hi {name},\n\n"
+                f"{instruction}\n\n"
+                f"Your Schedule:\n"
+                f"{schedule_text}\n\n"
+                f"Best,\n"
+                f"{event_name} Team"
+            )
+
+        # -------------------------------------------------
+        # Store Draft
+        # -------------------------------------------------
+
+        drafts.append(
+            {
+                "email": email,
+                "name": name,
+                "subject": (
+                    f"Update from {event_name}"
+                ),
+                "body": body,
+                "status": "pending_approval"
+            }
+        )
+
+    # -----------------------------------------------------
+    # 6. Return Drafts
+    # -----------------------------------------------------
 
     return {
         "drafts_created": len(drafts),
         "emails": drafts
     }
-
